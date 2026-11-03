@@ -1,0 +1,80 @@
+name: Publish Windows and Mac v0.1.9
+on:
+  push:
+    tags: ['v0.1.9']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: public-release-v0.1.9
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v0.1.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build Windows x64 installer
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath 'runtime/ffmpeg.exe') { throw 'The public build uses external FFmpeg.' }
+          npm run package -- --publish never
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify installation and startup
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path -LiteralPath 'release/0.1.9/ZiyunStudio-Setup-0.1.9.exe').Path
+          $dest = Join-Path $env:RUNNER_TEMP 'ZiyunStudio'
+          $proc = Start-Process -FilePath $installer -ArgumentList @('/S', ('/D=' + $dest)) -WindowStyle Hidden -PassThru -Wait
+          if ($proc.ExitCode) { throw "Installer returned $($proc.ExitCode)" }
+          $env:ZIYUN_TEST_EXE = Join-Path $dest '子云影像工坊.exe'
+          if (Test-Path -LiteralPath (Join-Path $dest 'resources/runtime/ffmpeg.exe')) { throw 'Unexpected bundled FFmpeg.' }
+          node scripts/verify-installed.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release/0.1.9/ZiyunStudio-Setup-0.1.9.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v0.1.9
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: assets
+      - name: Verify all three installers and publish together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          git fetch --no-tags origin refs/tags/v0.1.9-mac.2
+          # Reuse the Mac DMGs only when the complete application source matches.
+          git diff --exit-code FETCH_HEAD HEAD -- electron shared src package.json package-lock.json index.html vite.config.js runtime
+          gh release download v0.1.9-mac.2 -D assets -p 'ZiyunStudio-0.1.9-mac-*.dmg' -p 'SHA256SUMS-mac-*.txt'
+          (
+            cd assets
+            sha256sum -c SHA256SUMS-mac-arm64.txt SHA256SUMS-mac-x64.txt
+            sha256sum ZiyunStudio-Setup-0.1.9.exe ZiyunStudio-0.1.9-mac-arm64.dmg ZiyunStudio-0.1.9-mac-x64.dmg > SHA256SUMS.txt
+          )
+          gh release create v0.1.9 --verify-tag --draft --title '子云影像工坊 v0.1.9 · Windows / Mac' --notes-file .github/release-v0.1.9.md
+          gh release upload v0.1.9 assets/ZiyunStudio-Setup-0.1.9.exe assets/ZiyunStudio-0.1.9-mac-{arm64,x64}.dmg assets/SHA256SUMS.txt
+          for asset in ZiyunStudio-Setup-0.1.9.exe ZiyunStudio-0.1.9-mac-{arm64,x64}.dmg SHA256SUMS.txt; do
+            expected=$(wc -c < "assets/$asset")
+            actual=$(gh release view v0.1.9 --json assets --jq ".assets[] | select(.name == \"$asset\" and .state == \"uploaded\") | .size")
+            test "$actual" = "$expected"
+          done
+          gh release edit v0.1.9 --draft=false --latest

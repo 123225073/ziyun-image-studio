@@ -1,6 +1,16 @@
 # 子云影像工坊 · Ziyun Image Studio
 
-Windows 本地图片与视频批量生产工具。工作空间、任务记录和成片保存在电脑上，使用你在应用中配置的模型服务生成内容。
+Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任务记录和成片保存在电脑上，使用你在应用中配置的模型服务生成内容。
+
+## 下载安装
+
+| 你的电脑 | 下载 |
+| --- | --- |
+| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.1.9/ZiyunStudio-Setup-0.1.9.exe) |
+| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.1.9/ZiyunStudio-0.1.9-mac-arm64.dmg) |
+| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.1.9/ZiyunStudio-0.1.9-mac-x64.dmg) |
+
+[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.1.9/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.1.9.zip)
 
 ## 功能
 
@@ -9,25 +19,23 @@ Windows 本地图片与视频批量生产工具。工作空间、任务记录和
 - **混剪成片**按 A/B/C/D 组织素材和候选文案，支持导入音频、配音、字幕和时间轴编辑。
 - **任务记录**保留生成用时和本地结果。已生成的视频下载失败时，可在原卡片点「重试下载」。
 
-## Windows 安装与使用
+## 安装与使用
 
-1. 从 [GitHub Releases](https://github.com/123225073/ziyun-image-studio/releases) 下载 Windows x64 安装包。可使用附带的 SHA-256 文件核对安装包。
-2. 需要本地视频处理时，从 [FFmpeg 下载页](https://ffmpeg.org/download.html#build-windows) 获取支持 H.264（libx264）和字幕（libass）的 Windows 构建，将其中的 `ffmpeg.exe` 放到应用安装目录下的 `resources\runtime\ffmpeg.exe`。默认安装目录为 `%LOCALAPPDATA%\Programs\子云影像工坊`。GitHub 安装包由用户单独准备 FFmpeg。
+1. Windows 双击 EXE，按提示完成安装。Mac 打开 DMG，把应用拖到「应用程序」。可在「关于本机」查看 Mac 芯片类型。Mac 安装包尚未经 Apple 公证。
+2. 混剪、字幕和参考视频探测需要单独安装支持 libx264 和 libass 的 FFmpeg。Windows 从 [FFmpeg 下载页](https://ffmpeg.org/download.html#build-windows) 获取构建，把 `ffmpeg.exe` 放到应用安装目录的 `resources\runtime` 下。默认安装目录是 `%LOCALAPPDATA%\Programs\子云影像工坊`。Mac 可用 `brew install ffmpeg-full`，或把可执行的 `ffmpeg` 放到 `~/Library/Application Support/子云影像工坊/runtime/`。
 3. 启动应用，在「全局设置 → 模型连接」配置自己的接口地址、模型和 API Key，然后为所需工作流绑定连接。
 4. 在图片或视频工作区选择素材、填写要求并提交任务。完成后可预览结果，或导出到指定目录。
 
-图像、视频、语言和配音服务各自决定模型支持范围及收费规则。保存连接和测试模型列表之后，可按需使用生成服务。任务记录位于 `%APPDATA%\子云影像工坊\studio.sqlite`，凭据由 Windows 加密保存在该目录。使用在线模型时，应用会将当前操作所需的提示词或参考素材发送到所配置的服务。
+图像、视频、语言和配音服务各自决定模型支持范围及收费规则。任务记录保存在本机的应用数据目录，凭据由操作系统加密，换电脑后需要重新配置。使用在线模型时，应用会将当前操作所需的提示词或参考素材发送到所配置的服务。
 
 ## 从源码运行
 
-macOS 可从 Releases 选择相应的 DMG，Apple 芯片使用 arm64，Intel 芯片使用 x64。预览包使用临时签名，尚未经 Apple 公证。需要混剪、字幕或参考视频探测时，单独安装支持 libx264 和 libass 的 FFmpeg，例如 `brew install ffmpeg-full`。也可将可执行的 `ffmpeg` 放入 `~/Library/Application Support/子云影像工坊/runtime/`。Mac 上的模型凭据需重新配置。
-
-需要 Windows 10 或更新版本（x64）、Node.js 22 或更新版本及 npm。项目使用 Electron、React、Vite 和 SQLite（sql.js）。
+需要 Windows 或 macOS、Node.js 22 或更新版本及 npm。项目使用 Electron、React、Vite 和 SQLite（sql.js）。
 
 1. 将支持相应编码器和滤镜的 `ffmpeg.exe` 放到项目的 `runtime` 目录，用于混剪、参考视频探测和媒体测试。
 2. 运行 `npm ci` 安装依赖。
 3. 运行 `npm run build`，再运行 `npm start` 启动应用。
-4. 运行 `npm test` 检查服务和媒体处理。运行 `npm run package` 构建本地 Windows 安装包。
+4. 运行 `npm test` 检查服务和媒体处理。Windows 用 `npm run package` 打包，Mac 用 `npm run package:mac`。
 
 本机工作空间、凭据、素材、生成结果、依赖目录、构建输出和 FFmpeg 二进制文件均不随源码提交。
 
