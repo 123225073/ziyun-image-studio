@@ -13,6 +13,7 @@ const env = { ...process.env, ZIYUN_DATA_DIR: dataDir, ZIYUN_SMOKE: '1' };
 delete env.ELECTRON_RUN_AS_NODE;
 
 let application;
+let passed = false;
 try {
   console.log('Launching installed application.');
   application = await electron.launch({ executablePath, env, timeout: 60000 });
@@ -30,7 +31,18 @@ try {
   assert.equal(state.rows.length, 1);
   assert.equal(state.settings.providers.length, 0);
   console.log('Installed application starts and saves workspace data.');
+  passed = true;
 } finally {
+  if (process.env.CI === 'true' && passed) {
+    const closed = application.waitForEvent('close', { timeout: 10000 });
+    await Promise.all([
+      closed,
+      application.evaluate(({ app }) => { setTimeout(() => app.quit(), 100); }),
+    ]);
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
+    // Windows runners may retain Playwright's transport after Electron exits.
+    process.exit(0);
+  }
   try { await application?.close(); }
   finally { await rm(dataDir, { recursive: true, force: true }); }
 }
