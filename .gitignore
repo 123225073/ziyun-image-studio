@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+test-output/
+输出根目录/
+*.sqlite
+*.sqlite-*
+credentials.dpapi.json
+runtime/ffmpeg.exe
+.local/
+.superpowers/
+需求沟通素材/
+需求分析/取证/
+*.log
+*.local.json
+.env*
+!*.example

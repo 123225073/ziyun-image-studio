@@ -1,0 +1,5 @@
+FFmpeg 7.1 executable is shipped as an independent command-line media processor.
+Source distribution: https://ffmpeg.org/download.html
+The build's version and license are available with: ffmpeg.exe -L
+This local build uses the already installed imageio-ffmpeg Windows executable.
+Keep this executable as a required runtime dependency, separate from application code.
