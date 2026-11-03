@@ -1,5 +1,11 @@
 name: Build macOS
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing macOS release tag
+        required: true
+        default: v0.1.9-mac.1
   push:
     tags: ['v*-mac.*']
 permissions:
@@ -15,6 +21,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -79,9 +87,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           cd dist
           sha256sum -c SHA256SUMS-mac-arm64.txt SHA256SUMS-mac-x64.txt
-          gh release create "$GITHUB_REF_NAME" ./*.dmg ./SHA256SUMS-mac-*.txt --verify-tag --prerelease --latest=false \
+          gh release create "$RELEASE_TAG" ./*.dmg ./SHA256SUMS-mac-*.txt --verify-tag --prerelease --latest=false \
             --title "子云影像工坊 macOS 预览版" \
             --notes "Apple Silicon 请选择 arm64，Intel 请选择 x64。应用使用临时签名，尚未经 Apple 公证。视频处理需要单独安装 FFmpeg。"
