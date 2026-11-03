@@ -6,7 +6,9 @@ test-output/
 *.sqlite
 *.sqlite-*
 credentials.dpapi.json
+credentials.keychain.json
 runtime/ffmpeg.exe
+runtime/ffmpeg
 .local/
 .superpowers/
 需求沟通素材/

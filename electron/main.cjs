@@ -52,11 +52,11 @@ function mediaHeaders(file){const ext=path.extname(file).toLowerCase();return {'
 async function setup(){
  if(!app.requestSingleInstanceLock()){if(process.argv.includes('--configure-cpa')){process.stderr.write('请先关闭应用，再导入测试配置。\n');app.exit(1);}else app.quit();return;}
  app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
- vaultFile=path.join(dataDir,'credentials.dpapi.json');try{vault=JSON.parse(await fsp.readFile(vaultFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw new Error('加密配置无法读取，请保留数据目录并检查文件。');}
- const {StudioService}=await import('./service.mjs');const {runProvider,sniffMedia,readOairegboxDashboard}=await import('./providers.mjs');const {renderMontage,readMontageTimeline,mediaDuration}=await import('./render.mjs');
+ vaultFile=path.join(dataDir,process.platform==='darwin'?'credentials.keychain.json':'credentials.dpapi.json');try{vault=JSON.parse(await fsp.readFile(vaultFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw new Error('加密配置无法读取，请保留数据目录并检查文件。');}
+ const {StudioService}=await import('./service.mjs');const {runProvider,sniffMedia,readOairegboxDashboard}=await import('./providers.mjs');const {renderMontage,readMontageTimeline,mediaDuration,resolveFfmpeg}=await import('./render.mjs');
  const {normalizeTimeline}=await import('../shared/timeline.mjs');
  const {OAIREGBOX_BASE,OAIREGBOX_CONSOLE,oairegboxBase}=await import('../shared/oairegbox.mjs');
- const ffmpegPath=path.join(app.isPackaged?process.resourcesPath:root,'runtime','ffmpeg.exe');
+ const ffmpegPath=await resolveFfmpeg(app.isPackaged?process.resourcesPath:root,dataDir);
  const providerRunner=async(op,payload,context)=>runProvider(op,payload,{...context,inspectDuration:(file,signal)=>mediaDuration(ffmpegPath,file,signal),provider:{...context.provider,key:keyFor(context.provider.id)}});
  service=await StudioService.create({dataDir,providerRunner,videoDownloadFetch:(url,options)=>net.fetch(url,{...options,credentials:'omit'}),renderRunner:async(config,context)=>{const s=await service.getState();const segments=(config.segments||[]).map(seg=>({...seg,paths:[...(seg.paths||[]),...s.assets.filter(a=>(seg.assetIds||[]).includes(a.id)).map(a=>a.path)]}));return renderMontage({...config,segments},{...context,ffmpegPath});},onChange:s=>{if(win&&!win.isDestroyed())win.webContents.send('studio:changed',s);}});
  protocol.handle('studio-media',async request=>{

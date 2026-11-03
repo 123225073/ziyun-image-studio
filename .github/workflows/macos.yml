@@ -1,0 +1,87 @@
+name: Build macOS
+on:
+  push:
+    tags: ['v*-mac.*']
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-15, arch: arm64 }
+          - { runner: macos-15-intel, arch: x64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify local rendering
+        run: |
+          brew list --versions ffmpeg || brew install ffmpeg
+          npm test
+      - run: npm run package:mac -- --${{ matrix.arch }}
+      - name: Launch the app and verify the disk image
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          app=$(find "release/$version" -name '子云影像工坊.app' -type d -print -quit)
+          test -n "$app"
+          exe="$app/Contents/MacOS/子云影像工坊"
+          file "$exe" | grep -E '${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}'
+          codesign --verify --deep --strict "$app"
+          ZIYUN_SMOKE_EXE="$exe" node --input-type=module <<'JS'
+          import { _electron } from 'playwright';
+          import { mkdtemp } from 'node:fs/promises';
+          import { tmpdir } from 'node:os';
+          import path from 'node:path';
+          import assert from 'node:assert/strict';
+          const data = await mkdtemp(path.join(tmpdir(), 'ziyun-mac-'));
+          const app = await _electron.launch({
+            executablePath: path.resolve(process.env.ZIYUN_SMOKE_EXE),
+            env: { ...process.env, ZIYUN_SMOKE: '1', ZIYUN_DATA_DIR: data },
+          });
+          try {
+            assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
+            const page = await app.firstWindow();
+            await page.getByTestId('add-row').click();
+            assert.equal((await page.evaluate(() => window.studio.call('getState'))).rows.length, 1);
+          } finally {
+            await app.close();
+          }
+          JS
+          cd "release/$version"
+          dmg="ZiyunStudio-$version-mac-${{ matrix.arch }}.dmg"
+          hdiutil verify "$dmg"
+          shasum -a 256 "$dmg" > "SHA256SUMS-mac-${{ matrix.arch }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: |
+            release/*/*.dmg
+            release/*/SHA256SUMS-mac-*.txt
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish verified Mac packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS-mac-arm64.txt SHA256SUMS-mac-x64.txt
+          gh release create "$GITHUB_REF_NAME" ./*.dmg ./SHA256SUMS-mac-*.txt --verify-tag --prerelease --latest=false \
+            --title "子云影像工坊 macOS 预览版" \
+            --notes "Apple Silicon 请选择 arm64，Intel 请选择 x64。应用使用临时签名，尚未经 Apple 公证。视频处理需要单独安装 FFmpeg。"

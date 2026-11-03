@@ -1,8 +1,19 @@
 import {spawn} from 'node:child_process';
-import fs from 'node:fs/promises';
+import fs, {constants} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {normalizeTimeline,timelineDuration} from '../shared/timeline.mjs';
+
+export async function resolveFfmpeg(root, userData) {
+ const binary=process.platform==='win32'?'ffmpeg.exe':'ffmpeg';
+ const local=path.join(root,'runtime',binary);
+ if(process.platform!=='darwin')return local;
+ const candidates=[local,userData&&path.join(userData,'runtime',binary),'/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg'];
+ for(const candidate of candidates.filter(Boolean)){
+  try{await fs.access(candidate,constants.X_OK);return candidate}catch{}
+ }
+ return 'ffmpeg';
+}
 
 export async function runMedia(executable,args,{cwd,signal,allowFailure=false}={}){
  if(signal?.aborted)throw new Error('视频合成已停止。');
@@ -15,7 +26,7 @@ export function toSrt(cues){return cues.map((c,i)=>`${i+1}\n${stamp(c.start)} --
 const IMAGE=/\.(png|jpe?g|webp|gif|bmp)$/i;
 const frameFilter=(width,height)=>`scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30`;
 const frameSize=ratio=>ratio==='16:9'?[1920,1080]:ratio==='1:1'?[1080,1080]:[1080,1920];
-const subtitleStyle=size=>`FontName=Microsoft YaHei,FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00202020,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=54`;
+const subtitleStyle=size=>`FontName=${process.platform==='darwin'?'PingFang SC':'Microsoft YaHei'},FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00202020,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=54`;
 
 function montageTimeline(ratio,segments,cues) {
  const clips=[];
@@ -119,7 +130,7 @@ async function renderTimeline(config,ffmpeg,{signal,onProgress}){
  return {localPath:output,subtitlePath,timeline,width,height,duration};
 }
 export async function renderMontage(config,context={}){
- const ffmpeg=context.ffmpegPath||path.resolve('runtime/ffmpeg.exe');const {signal}=context;
+ const ffmpeg=context.ffmpegPath||await resolveFfmpeg(process.cwd());const {signal}=context;
  if(config.timeline)return renderTimeline(config,ffmpeg,context);
  if(!config.segments?.length)throw new Error('请先填写文案段落并选择对应素材。');
  if(!['9:16','16:9','1:1'].includes(config.ratio||'9:16'))throw new Error('混剪输出比例暂支持9:16、16:9、1:1。');
@@ -172,7 +183,7 @@ export async function renderMontage(config,context={}){
  }
  await fs.writeFile(path.join(work,'sections.txt'),manifest.map(s=>`file '${s.clip}'`).join('\n'));const output=path.join(base,`${taskId}.mp4`);const srt=path.join(base,`${taskId}.srt`);await fs.writeFile(srt,toSrt(allCues),'utf8');
  let subtitleFilter=[];
- if(config.subtitle!==false){await fs.writeFile(path.join(work,'subtitles.srt'),toSrt(allCues),'utf8');const fontSize=config.ratio==='16:9'?24:30;subtitleFilter=['-vf',`subtitles=subtitles.srt:force_style='FontName=Microsoft YaHei,FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00202020,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=54'`];}
+ if(config.subtitle!==false){await fs.writeFile(path.join(work,'subtitles.srt'),toSrt(allCues),'utf8');const fontSize=config.ratio==='16:9'?24:30;subtitleFilter=['-vf',`subtitles=subtitles.srt:force_style='${subtitleStyle(fontSize)}'`];}
  await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-f','concat','-safe','1','-i','sections.txt',...subtitleFilter,'-c:v',config.subtitle===false?'copy':'libx264',...(config.subtitle===false?[]:['-preset','veryfast','-crf','21']),'-c:a','copy','-movflags','+faststart',output],{cwd:work,signal});
  const actual=await mediaDuration(ffmpeg,output,signal);if(Math.abs(actual-offset)>.5)throw new Error('成片时长与声音时间轴不一致，请检查素材后重试。');
  const timeline=montageTimeline(config.ratio||'9:16',manifest,config.subtitle===false?[]:allCues);
