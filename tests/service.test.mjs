@@ -12,7 +12,7 @@ const provider = { id: 'fake', name: '测试服务', protocol: 'openai-images', 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fixture(t, runner, extra = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ziyun-service-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ziyun-service-')));
   const dataDir = path.join(root, 'data');
   const service = await StudioService.create({ dataDir, providerRunner: runner, ...extra });
   t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });

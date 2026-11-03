@@ -8,7 +8,13 @@ export async function resolveFfmpeg(root, userData) {
  const binary=process.platform==='win32'?'ffmpeg.exe':'ffmpeg';
  const local=path.join(root,'runtime',binary);
  if(process.platform!=='darwin')return local;
- const candidates=[local,userData&&path.join(userData,'runtime',binary),'/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg'];
+ const configured=process.env.ZIYUN_FFMPEG_PATH;
+ const candidates=[
+  configured&&path.isAbsolute(configured)&&configured,
+  local,userData&&path.join(userData,'runtime',binary),
+  '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg','/usr/local/opt/ffmpeg-full/bin/ffmpeg',
+  '/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg',
+ ];
  for(const candidate of candidates.filter(Boolean)){
   try{await fs.access(candidate,constants.X_OK);return candidate}catch{}
  }

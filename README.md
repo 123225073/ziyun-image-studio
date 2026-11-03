@@ -20,7 +20,7 @@ Windows 本地图片与视频批量生产工具。工作空间、任务记录和
 
 ## 从源码运行
 
-macOS 可从 Releases 选择相应的 DMG，Apple 芯片使用 arm64，Intel 芯片使用 x64。预览包使用临时签名，尚未经 Apple 公证。需要混剪、字幕或参考视频探测时，单独安装支持 libx264 和 libass 的 FFmpeg，例如 `brew install ffmpeg`。Mac 上的模型凭据需重新配置。
+macOS 可从 Releases 选择相应的 DMG，Apple 芯片使用 arm64，Intel 芯片使用 x64。预览包使用临时签名，尚未经 Apple 公证。需要混剪、字幕或参考视频探测时，单独安装支持 libx264 和 libass 的 FFmpeg，例如 `brew install ffmpeg-full`。也可将可执行的 `ffmpeg` 放入 `~/Library/Application Support/子云影像工坊/runtime/`。Mac 上的模型凭据需重新配置。
 
 需要 Windows 10 或更新版本（x64）、Node.js 22 或更新版本及 npm。项目使用 Electron、React、Vite 和 SQLite（sql.js）。
 
