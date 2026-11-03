@@ -1,0 +1,40 @@
+name: Verify published installers
+on:
+  push:
+    branches: ['codex/verify-v0.1.9']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the public release and verify each file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/latest" > release.json
+          tag=$(jq -er '.tag_name' release.json)
+          test "$tag" = v0.1.9
+          base="https://github.com/$GH_REPO/releases/download/$tag"
+          expected=(
+            ZiyunStudio-Setup-0.1.9.exe
+            ZiyunStudio-0.1.9-mac-arm64.dmg
+            ZiyunStudio-0.1.9-mac-x64.dmg
+            SHA256SUMS.txt
+          )
+          test "$(jq '.assets | length' release.json)" = "${#expected[@]}"
+          for name in "${expected[@]}"; do
+            curl --fail --silent --show-error --location --retry 2 "$base/$name" --output "$name"
+            size=$(wc -c < "$name")
+            digest=$(sha256sum "$name" | cut -d' ' -f1)
+            jq -e --arg name "$name" --argjson size "$size" --arg digest "sha256:$digest" \
+              '.assets | any(.name == $name and .size == $size and .digest == $digest and .state == "uploaded")' release.json
+            printf '%s bytes  %s  %s\n' "$size" "$digest" "$name"
+          done
+          test "$(wc -l < SHA256SUMS.txt)" = 3
+          sha256sum --check --strict SHA256SUMS.txt
