@@ -6,6 +6,9 @@ on:
         description: Existing macOS release tag
         required: true
         default: v0.1.9-mac.2
+      verified_intel_run:
+        description: Optional previous workflow run containing mac-x64
+        required: false
   push:
     tags: ['v*-mac.*']
 permissions:
@@ -16,9 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: macos-15, arch: arm64 }
-          - { runner: macos-15-intel, arch: x64 }
+        include: ${{ fromJSON(inputs.verified_intel_run && '[{"runner":"macos-26","arch":"arm64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x64"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -81,20 +82,31 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        if: inputs.verified_intel_run != ''
+        with:
+          name: mac-x64
+          path: dist/intel
+          run-id: ${{ inputs.verified_intel_run }}
+          github-token: ${{ github.token }}
       - name: Publish verified Mac packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          cd dist
+          mkdir ready
+          find dist -type f \( -name '*.dmg' -o -name 'SHA256SUMS-mac-*.txt' \) -exec cp {} ready/ \;
+          cd ready
           sha256sum -c SHA256SUMS-mac-arm64.txt SHA256SUMS-mac-x64.txt
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then exit 0; fi
           gh release create "$RELEASE_TAG" ./*.dmg ./SHA256SUMS-mac-*.txt --verify-tag --prerelease --latest=false \
             --title "子云影像工坊 macOS 预览版" \
             --notes "Apple Silicon 请选择 arm64，Intel 请选择 x64。应用使用临时签名，尚未经 Apple 公证。视频处理需要单独安装 FFmpeg。"
