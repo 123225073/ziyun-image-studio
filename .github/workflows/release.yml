@@ -2,10 +2,13 @@ name: Publish Windows and Mac v0.1.9
 on:
   push:
     tags: ['v0.1.9']
+    branches: ['codex/publish-v0.1.9']
   workflow_dispatch:
 permissions:
   contents: read
-concurrency: public-release-v0.1.9
+concurrency:
+  group: public-release-v0.1.9
+  cancel-in-progress: true
 
 jobs:
   windows:
@@ -25,15 +28,27 @@ jobs:
           if (Test-Path -LiteralPath 'runtime/ffmpeg.exe') { throw 'The public build uses external FFmpeg.' }
           npm run package -- --publish never
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Verify installation and startup
+      - name: Install on Windows
+        timeout-minutes: 2
         shell: pwsh
         run: |
           $installer = (Resolve-Path -LiteralPath 'release/0.1.9/ZiyunStudio-Setup-0.1.9.exe').Path
           $dest = Join-Path $env:RUNNER_TEMP 'ZiyunStudio'
-          $proc = Start-Process -FilePath $installer -ArgumentList @('/S', ('/D=' + $dest)) -WindowStyle Hidden -PassThru -Wait
+          Write-Output "Installing into $dest"
+          $proc = Start-Process -FilePath $installer -ArgumentList @('/S', '/currentuser', ('/D=' + $dest)) -WindowStyle Hidden -PassThru
+          if (!$proc.WaitForExit(90000)) { throw 'The Windows installer did not exit within 90 seconds.' }
           if ($proc.ExitCode) { throw "Installer returned $($proc.ExitCode)" }
-          $env:ZIYUN_TEST_EXE = Join-Path $dest '子云影像工坊.exe'
+          $exe = (Resolve-Path -LiteralPath (Join-Path $dest '子云影像工坊.exe')).Path
+          "ZIYUN_TEST_EXE=$exe" >> $env:GITHUB_ENV
           if (Test-Path -LiteralPath (Join-Path $dest 'resources/runtime/ffmpeg.exe')) { throw 'Unexpected bundled FFmpeg.' }
+      - name: Verify application startup and persistence
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          git fetch --no-tags origin $env:GITHUB_SHA
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git show 'FETCH_HEAD:scripts/verify-installed.mjs' | Set-Content -Encoding utf8 'scripts/verify-installed.mjs'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node scripts/verify-installed.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
