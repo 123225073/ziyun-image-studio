@@ -32,7 +32,7 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 
 需要 Windows 或 macOS、Node.js 22 或更新版本及 npm。项目使用 Electron、React、Vite 和 SQLite（sql.js）。
 
-1. 将支持相应编码器和滤镜的 `ffmpeg.exe` 放到项目的 `runtime` 目录，用于混剪、参考视频探测和媒体测试。
+1. 如需混剪、参考视频探测或运行媒体测试，Windows 将 `ffmpeg.exe` 放到项目的 `runtime` 目录，Mac 按上面的 FFmpeg 步骤安装。
 2. 运行 `npm ci` 安装依赖。
 3. 运行 `npm run build`，再运行 `npm start` 启动应用。
 4. 运行 `npm test` 检查服务和媒体处理。Windows 用 `npm run package` 打包，Mac 用 `npm run package:mac`。
