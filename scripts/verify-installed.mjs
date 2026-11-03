@@ -34,15 +34,15 @@ try {
   passed = true;
 } finally {
   if (process.env.CI === 'true' && passed) {
-    const closed = application.waitForEvent('close', { timeout: 10000 });
-    await Promise.all([
-      closed,
-      application.evaluate(({ app }) => { setTimeout(() => app.quit(), 100); }),
+    const closed = await Promise.race([
+      application.close().then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 5000)),
     ]);
-    await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
-    // Windows runners may retain Playwright's transport after Electron exits.
-    process.exit(0);
+    if (closed) await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
+    const message = closed ? 'Verification completed.' : 'Verification completed. Runner will dispose of the isolated test process.';
+    process.stdout.write(`${message}\n`, () => process.exit(0));
+  } else {
+    try { await application?.close(); }
+    finally { await rm(dataDir, { recursive: true, force: true }); }
   }
-  try { await application?.close(); }
-  finally { await rm(dataDir, { recursive: true, force: true }); }
 }
