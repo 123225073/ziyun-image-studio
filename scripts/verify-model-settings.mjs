@@ -1,0 +1,118 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import http from 'node:http';
+import { createRequire } from 'node:module';
+import { _electron as electron } from 'playwright';
+import { MODEL_GROUPS } from '../shared/model-settings.mjs';
+
+const root = path.resolve(import.meta.dirname, '..');
+const output = await fs.mkdtemp(path.join(root, 'test-output', 'model-settings-'));
+const data = path.join(output, 'workspace');
+const env = { ...process.env, ZIYUN_DATA_DIR: data, ZIYUN_SMOKE: '1' };
+delete env.ELECTRON_RUN_AS_NODE;
+const executablePath = process.env.ZIYUN_TEST_EXE || createRequire(import.meta.url)('electron');
+const requests = [];
+const server = http.createServer((req, res) => {
+  requests.push({ path: req.url, authorization: req.headers.authorization });
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ data: [{ id: 'fixture-model' }] }));
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+let app;
+let page;
+const errors = [];
+const launch = async () => {
+  app = await electron.launch({ executablePath, args: process.env.ZIYUN_TEST_EXE ? [] : [root], env, timeout: 60000 });
+  await app.evaluate(({ shell }) => { globalThis.helpUrls = []; shell.openExternal = async url => { globalThis.helpUrls.push(url); }; });
+  page = await app.firstWindow();
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({ width: 1513, height: 950 });
+  await page.getByTestId('settings-nav').click();
+};
+const call = (method, ...args) => page.evaluate(([method, args]) => window.studio.call(method, ...args), [method, args]);
+const button = name => page.getByRole('button', { name, exact: true });
+const tab = id => page.getByRole('tab', { name: new RegExp(MODEL_GROUPS.find(group => group.id === id).label) });
+try {
+  await launch();
+  // Seed a legacy connection: no migration or credential re-entry should be required.
+  await call('saveProvider', { id: 'legacy-image', name: '已有图片服务', protocol: 'openai-images', baseUrl, model: 'fixture-model', timeoutMs: 600000, key: 'isolated-fixture-key' });
+  await call('updateSettings', { bindings: { image: 'legacy-image' } });
+  const legacy = (await call('getState')).settings.providers[0];
+  await tab('image').click();
+  await button('编辑连接 已有图片服务').waitFor();
+  assert.equal(await page.getByLabel('图片生成连接').inputValue(), legacy.id);
+  await button('编辑连接 已有图片服务').click();
+  let dialog = page.getByRole('dialog', { name: '编辑模型服务' });
+  assert.equal(await dialog.getByLabel('API Key', { exact: true }).inputValue(), '');
+  assert.equal(await dialog.getByLabel('模型名称', { exact: true }).inputValue(), legacy.model);
+  assert.equal(await dialog.getByLabel('服务平台', { exact: true }).isDisabled(), true);
+  assert.equal(await dialog.getByLabel('接口协议').count(), 0);
+  await dialog.getByRole('button', { name: '打开服务平台', exact: true }).click();
+  await dialog.getByRole('button', { name: '保存服务', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.deepEqual((await call('getState')).settings.providers.find(provider => provider.id === legacy.id), legacy);
+  await call('fetchProviderModels', legacy);
+  assert.equal(requests.at(-1).authorization, 'Bearer isolated-fixture-key');
+  assert.equal((await app.evaluate(() => globalThis.helpUrls)).at(-1), new URL(baseUrl).origin);
+  await button('添加图片生成服务').click();
+  dialog = page.getByRole('dialog', { name: '添加图片生成服务' });
+  await dialog.getByLabel('服务平台', { exact: true }).selectOption('openai-image');
+  await dialog.getByRole('button', { name: '获取 API Key', exact: true }).click();
+  assert.equal((await app.evaluate(() => globalThis.helpUrls)).at(-1), 'https://platform.openai.com/api-keys');
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+
+  await tab('speech').click();
+  await button('添加语音合成服务').click();
+  dialog = page.getByRole('dialog', { name: '添加语音合成服务' });
+  await dialog.getByRole('button', { name: '获取语音 API Key', exact: true }).click();
+  assert.match((await app.evaluate(() => globalThis.helpUrls)).at(-1), /speech\/new\/setting\/apikeys$/);
+  await dialog.getByLabel('API Key', { exact: true }).fill('must-not-carry-to-other-platform');
+  await dialog.getByLabel('服务平台', { exact: true }).selectOption('minimax-speech-cn');
+  assert.equal(await dialog.getByLabel('API Key', { exact: true }).inputValue(), '');
+  assert.equal(await dialog.getByLabel('模型名称', { exact: true }).inputValue(), 'speech-2.8-hd');
+  await dialog.getByRole('button', { name: '获取 API Key', exact: true }).click();
+  assert.equal((await app.evaluate(() => globalThis.helpUrls)).at(-1), 'https://platform.minimax.cn/console/keys');
+  assert.equal(await dialog.locator('details').getAttribute('open'), null);
+  await page.screenshot({ path: path.join(output, 'speech-simple-form.png') });
+  await dialog.getByText('高级设置 · 名称、服务地址与等待时间', { exact: true }).click();
+  await dialog.getByLabel('接口基础地址', { exact: true }).fill(baseUrl);
+  await dialog.getByLabel('API Key', { exact: true }).fill('isolated-mini-key');
+  await dialog.getByLabel('连接名称', { exact: true }).fill('新增配音服务');
+  await dialog.getByRole('button', { name: '保存服务', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  const added = (await call('getState')).settings.providers.find(provider => provider.name === '新增配音服务');
+  assert.equal(added.protocol, 'minimax-tts');
+  assert.equal((await call('getState')).settings.bindings.tts, added.id);
+  assert.equal((await call('getState')).settings.bindings.image, legacy.id);
+
+  await tab('video').click();
+  await button('添加视频生成服务').click();
+  dialog = page.getByRole('dialog', { name: '添加视频生成服务' });
+  await dialog.getByRole('button', { name: '创建 API 令牌', exact: true }).click();
+  assert.equal((await app.evaluate(() => globalThis.helpUrls)).at(-1), 'https://newapi-2.oairegbox.cc/console/token');
+  await dialog.getByLabel('服务平台', { exact: true }).selectOption('replicate');
+  await dialog.getByRole('button', { name: '获取 API Token', exact: true }).click();
+  assert.equal((await app.evaluate(() => globalThis.helpUrls)).at(-1), 'https://replicate.com/account/api-tokens');
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await tab('image').click();
+  await page.screenshot({ path: path.join(output, 'image-services.png') });
+  assert.equal((await call('getState')).settings.providers.length, 2);
+  const expected = (await call('getState')).settings;
+  await app.close();
+  await launch();
+  const restored = (await call('getState')).settings;
+  assert.deepEqual(restored.providers, expected.providers);
+  assert.deepEqual(restored.bindings, expected.bindings);
+  assert.deepEqual(errors, []);
+  await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ passed: true, existingConnectionPreserved: true, credentialReuseVerified: true, newDefaultBound: true, externalHelpVerified: true, restartPreserved: true, errors }, null, 2));
+  console.log('MODEL_SETTINGS_VERIFICATION_PASS', output);
+} catch (error) {
+  await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});
+  console.error('Settings verification failed:',output);
+  throw error;
+} finally {
+  await app?.close();
+  await new Promise(resolve => server.close(resolve));
+}

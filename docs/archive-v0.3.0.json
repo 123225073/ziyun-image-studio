@@ -1,0 +1,163 @@
+{
+  "version": "0.3.0",
+  "purpose": "Historical Windows installer and corresponding source archive",
+  "publicParent": "8cf750a670b1f51f62da3f61b71e586eb2809478",
+  "localBaselineParent": "d0bab562736fd9bbc98dbd9fdb2134e087656b1c",
+  "artifacts": [
+    {
+      "file": "SHA256SUMS.txt",
+      "bytes": 95,
+      "sha256": "c9d975f332036034f255f91a3fba77497016958ccc5d2cb288c505dd80f95201"
+    },
+    {
+      "file": "ZiyunStudio-Setup-0.3.0.exe",
+      "bytes": 160558881,
+      "sha256": "47da11663f18c3c133e186a9688c35bacdfd4daa72d3ea38477ce592bbb43efe"
+    },
+    {
+      "file": "ZiyunStudio-Setup-0.3.0.exe.blockmap",
+      "bytes": 167227,
+      "sha256": "4c2432bcaf1a6e1ed0a04a0fe607941f607171e3cdd12c00699814ec35593a6a"
+    },
+    {
+      "file": "latest.yml",
+      "bytes": 351,
+      "sha256": "e4ffbac37123ca0634b397310c3591c42e22de0f6678a5d5587fb7439a2c8491"
+    }
+  ],
+  "sourceModules": [
+    {
+      "file": "electron/default-rules.mjs",
+      "sha256": "c4bbc26dd2c2e0108e808ea80ae8b1c5f2eb35f9d7e3b5a17cd1afc324d47df6",
+      "bytes": 4983,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/jianying.mjs",
+      "sha256": "a32f567a47eea519b3599554e30bf439b028b01654ea2514ae76239a8fd0e4d4",
+      "bytes": 10952,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/main.cjs",
+      "sha256": "ae420e0245890aa8d1f5541c2b0ff88491528f79a6d7fb66f08ffa2cbc8f18a5",
+      "bytes": 25360,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/montage-library.mjs",
+      "sha256": "ddc0a2bdce9dab13f0d131fac5041c6f7d21f8adb3023f4b277542290860da2e",
+      "bytes": 8624,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/preload.cjs",
+      "sha256": "e8b1701e8358ddd06bf26f62fde2bef39565fb8d04c9fc039601b88710310038",
+      "bytes": 1052,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/providers.mjs",
+      "sha256": "d704a942dd58cae08ae33ba6d9c9dae93aa836cd6bdc391c215ae89242f22766",
+      "bytes": 34113,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/render.mjs",
+      "sha256": "e79c3ba7dac09062936723f7a7bcef5073340929de7077c444bb73340ff50436",
+      "bytes": 26085,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/service.mjs",
+      "sha256": "bea238a6f725c9cbc07126defc4491da647af2993e35ac2ec07b3a6767c85e78",
+      "bytes": 97714,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/speech.mjs",
+      "sha256": "89706237ec7826fc6ace5c6dc2a8d8f5a60dc0a43a8fa1304985d70956eb060b",
+      "bytes": 11605,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "electron/store.mjs",
+      "sha256": "31de47ca80199b48f3aec3ec47c35a228588e052c5d77a84ad513d53f9b5ff99",
+      "bytes": 2571,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/image-rows.mjs",
+      "sha256": "9f94d1a628fc0e20118796b1e090fbf18386c640aecd8f9ed1aa634e0f011e29",
+      "bytes": 1228,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/model-settings.mjs",
+      "sha256": "44fe8ba83e51b00393865b5664958a3192f2d855f87ef295dfc7e95961d2d3eb",
+      "bytes": 6719,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/montage-batch.mjs",
+      "sha256": "65e8d5782f173ad52360c3ae20f144a1015211172e1b9195f244dfcacd4db088",
+      "bytes": 3824,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/montage-planner.mjs",
+      "sha256": "3fda1edd0f361d867921ed78bf3c49e29b31090794929d86a0c1691d15097e72",
+      "bytes": 9863,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/oairegbox.mjs",
+      "sha256": "0f64cabc81005f2d53b1a71f93b3cbd28d4256873bfe53469dd94cc76543d4de",
+      "bytes": 3526,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/prompt-rules.mjs",
+      "sha256": "e906d069ea8796df83931ae4fd39cd6edb17d8ce27b6ad501471fcb15aac4932",
+      "bytes": 3538,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/speech.mjs",
+      "sha256": "47c201874dd1b91416df7982ec65201ca3f5dc3f5d09b65861306d885e113889",
+      "bytes": 4296,
+      "baselineByteEqual": true
+    },
+    {
+      "file": "shared/timeline.mjs",
+      "sha256": "a064a9cd99d010f2aff34c7e55d07021baefb2e0bca0ca54bcfaeb50c3b39f24",
+      "bytes": 2426,
+      "baselineByteEqual": true
+    }
+  ],
+  "frontEnd": [
+    {
+      "file": "dist/index.html",
+      "sha256": "eb4f2600aec5816e949674a279812f6d5cd8940e30a5bb37a8b9a4690f483573",
+      "bytes": 413,
+      "reconstructedByteEqual": true
+    },
+    {
+      "file": "dist/assets/index-CLqVykfi.js",
+      "sha256": "960596ccf485dd7a159846830af9dd54deb43738c43c7304d37e17f00a4fcddd",
+      "bytes": 457716,
+      "reconstructedByteEqual": true
+    },
+    {
+      "file": "dist/assets/index-BxSPQuFJ.css",
+      "sha256": "9fe73d4d809d9c76d01549a8d9e18c2237dc05c4433ca8277d9a5fb894b2f19a",
+      "bytes": 63869,
+      "reconstructedByteEqual": true
+    }
+  ],
+  "packageMetadataMatches": true,
+  "dependencyLockMatches": true,
+  "macOSArtifactAvailable": false,
+  "sourceNormalization": "CRLF normalized to LF in public source; package modules compared before normalization",
+  "excluded": "Private local-delivery/cleanup records, encrypted old workflows, generated outputs, dependencies, runtime binaries, user data and credentials"
+}

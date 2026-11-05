@@ -44,6 +44,8 @@ export default function TimelineEditor({record,call,choose,media,run,setDirty,on
  const [scale,setScale]=useState(64),[message,setMessage]=useState(''),[working,setWorking]=useState(false);
  const [dirty,setLocalDirty]=useState(false),[closing,setClosing]=useState(false),[dragging,setDragging]=useState(null);
  const [undo,setUndo]=useState([]);
+ const [draftRoot,setDraftRoot]=useState(''),[exported,setExported]=useState('');
+ useEffect(()=>{call('getState').then(state=>setDraftRoot(state.settings.jianyingDraftRoot||''))},[]);
  const drag=useRef(null), playhead=useRef(0);
  const clips=timeline.clips;
  const duration=timelineDuration(clips);
@@ -126,6 +128,8 @@ export default function TimelineEditor({record,call,choose,media,run,setDirty,on
   }finally{setWorking(false)}
  },enqueue?'编辑版已加入导出队列':'时间轴草稿已保存');
  const togglePlay=()=>{if(!duration)return;if(playing)stop();else{if(time>=duration)seek(0);setPlaying(true)}};
+ const selectDraftRoot=()=>run(async()=>{const folder=await window.studio.chooseFolder('jianying');if(folder){await call('updateSettings',{jianyingDraftRoot:folder});setDraftRoot(folder)}});
+ const exportDraft=()=>run(async()=>{stop();setWorking(true);try{const result=await call('exportJianying',record.id,timeline);mark(false);setExported(result.directory)}finally{setWorking(false)}});
 
  return <div className="timeline-overlay" role="dialog" aria-modal="true" aria-label="成片时间轴">
   <header className="timeline-header">
@@ -133,6 +137,7 @@ export default function TimelineEditor({record,call,choose,media,run,setDirty,on
    <div className="actions">
     <button className="button" disabled={working} onClick={close}>返回成片</button>
     <button className="button" disabled={working||!dirty} onClick={()=>persist(false)}>保存草稿</button>
+    <button className="button" disabled={working||!draftRoot||!clips.some(c=>c.track==='picture')} onClick={exportDraft}>导出剪映草稿</button>
     <button className="button primary" disabled={working||!clips.some(c=>c.track==='picture')} onClick={()=>persist(true)}>导出编辑版</button>
    </div>
   </header>
@@ -141,6 +146,10 @@ export default function TimelineEditor({record,call,choose,media,run,setDirty,on
     <h3>添加到轨道</h3>
     {tracks.map(track=><button key={track.id} className="button" onClick={()=>add(track.id)}>＋ {track.name}</button>)}
     <p>拖动片段改变位置。双击片段可跳转预览。选中后可在右侧精确调整时间。</p>
+    <button className="button" disabled={working} onClick={selectDraftRoot}>{draftRoot?'更换剪映草稿目录':'选择剪映草稿目录'}</button>
+    <p className="draft-root" title={draftRoot}>{draftRoot||'在剪映「设置 → 草稿位置」查看根目录，然后在这里选择。'}</p>
+    {exported&&<p role="status" className="draft-root">已导出：{exported}。请在剪映草稿页打开检查画面和声音。</p>}
+    {record.warnings?.map((warning,index)=><p key={index}>{warning}</p>)}
     {timeline.flattened&&<p>此旧成片缺少分轨清单，已将原画面和声音导入。原片内已有字幕随画面保留。</p>}
    </section>
    <section className="timeline-player">

@@ -1,6 +1,8 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { h3Model, h3ReferenceError, oairegboxBase } from '../shared/oairegbox.mjs';
+import { normalizeSpeechOptions, SPEECH_CATALOGS, TTS_PROTOCOLS } from '../shared/speech.mjs';
+import { runSpeech } from './speech.mjs';
 
 const MB = 1024 * 1024;
 const MAX_JSON = 96 * MB;
@@ -418,6 +420,7 @@ export async function runProvider(operation,payload={},context={}) {
   if(!p?.key || (!p.model && operation!=='models') || !p.baseUrl) throw fail('请先完整配置模型服务、地址、型号和密钥。');
   if(p.protocol==='oairegbox-video')oairegboxBase(p.baseUrl);
   if(operation==='models') {
+    if(['doubao-tts','minimax-tts'].includes(p.protocol))return {models:[...SPEECH_CATALOGS[p.protocol].models],catalog:true,text:'显示官方语音型号目录，实际权限和音色需通过语音任务验证。'};
     const replicate=p.protocol==='replicate-video';
     if (replicate && !p.model) {
       const candidates = await Promise.allSettled(['minimax/h3','minimax/h3-lite'].map(model =>
@@ -439,14 +442,19 @@ export async function runProvider(operation,payload={},context={}) {
     if(!models.length) throw fail('连接已响应，但没有返回可用模型列表，请核对协议或权限。');
     return {text:p.model?(models.includes(p.model)?'连接成功，当前型号在模型列表中；生成能力仍需实际任务验证。':'连接成功，但当前型号未列出；请核对型号或账号权限。'):'连接成功，已获取模型列表。',models};
   }
-  const compatible={describe:['openai-chat'],plan:['openai-chat'],rewrite:['openai-chat'],image:['openai-images'],videoSubmit:['minimax-video','replicate-video','oairegbox-video'],videoPoll:['minimax-video','replicate-video','oairegbox-video'],tts:['openai-tts']};
+  const compatible={describe:['openai-chat'],plan:['openai-chat'],rewrite:['openai-chat'],image:['openai-images'],videoSubmit:['minimax-video','replicate-video','oairegbox-video'],videoPoll:['minimax-video','replicate-video','oairegbox-video'],tts:TTS_PROTOCOLS};
   if(!compatible[operation]?.includes(p.protocol)) throw fail('此服务协议不支持所选操作，请检查独立能力绑定。');
   if(operation==='describe'||operation==='plan'||operation==='rewrite') return chat(operation,payload,context);
   if(operation==='image') return images(payload,context);
   if(operation==='videoSubmit') return videoSubmit(payload,context);
   if(operation==='videoPoll') return videoPoll(payload,context);
-  const bytes=await request(context,'/v1/audio/speech',{model:p.model,input:prompt(payload),voice:payload.voice||'alloy',response_format:'mp3'},{binary:true,maxBytes:50*MB,submit:true});
-  let media;try{media=sniffMedia(bytes);}catch{throw uncertain('远端已响应，但文件内容不是有效 MP3；请核对配音记录后再决定重新生成。');}
-  if(media.mime!=='audio/mpeg') throw uncertain('配音服务没有返回 MP3 音频，请核对配音记录后再决定重新生成。');
-  return {bytes,mime:'audio/mpeg'};
+  if(p.protocol==='doubao-tts'||p.protocol==='minimax-tts')return runSpeech(payload,context);
+  const options=normalizeSpeechOptions(payload,p);
+  const body={model:p.model,input:prompt(payload),voice:options.voice,response_format:options.format};
+  if(payload.speed!==undefined)body.speed=options.speed;
+  const bytes=await request(context,'/v1/audio/speech',body,{binary:true,maxBytes:50*MB,submit:true});
+  let media;try{media=sniffMedia(bytes);}catch{throw uncertain('远端已响应，但文件内容不是有效配音；请核对配音记录后再决定重新生成。');}
+  const mime=options.format==='wav'?'audio/wav':'audio/mpeg';
+  if(media.mime!==mime) throw uncertain('配音服务没有返回所选格式的音频，请核对配音记录后再决定重新生成。');
+  return {bytes,mime};
 }

@@ -68,14 +68,15 @@ try{
   throw new Error(`等待状态超时 ${status}`);
  };
  await button('全局设置').click();
- await button('新增连接').click();
+ await page.getByRole('tab',{name:/图片生成/}).click();
+ await button('添加图片生成服务').click();
+ await page.getByText('高级设置 · 名称、服务地址与等待时间',{exact:true}).click();
  await page.getByLabel('连接名称',{exact:true}).fill('本地验收连接');
- await page.getByLabel('接口协议',{exact:true}).selectOption('openai-images');
  await page.getByLabel('接口基础地址',{exact:true}).fill(`http://127.0.0.1:${server.address().port}/v1`);
  await page.getByLabel('API Key',{exact:true}).fill('fake-local-key');
  await button('获取模型').click();
- await page.getByLabel('模型名称',{exact:true}).selectOption('gpt-image-2.5');
- await button('安全保存连接').click();
+ await page.getByLabel('模型名称',{exact:true}).fill('gpt-image-2.5');
+ await button('保存服务').click();
  const binding=page.getByLabel('图片生成连接');
  await binding.selectOption({label:'本地验收连接 · gpt-image-2.5'});
  await button('图片分类').click();
@@ -145,7 +146,7 @@ try{
   ['GET','/v1/models',true,undefined],['POST','/v1/images/edits',true,'864x1536'],['POST','/v1/images/edits',true,'1152x1536']
  ]);
 
- const [audioAsset]=await call('importFiles',[music],'audio','验收');
+ const [audioAsset]=await call('importFiles',[music,voice],'audio','验收');
  const montage=await call('enqueueMontage',{name:'多轨成片验收',ratio:'9:16',subtitle:true,segments:[{section:'A',text:'原始字幕。',paths:[image],audioPath:voice}]});
  await wait(montage.id,'succeeded');
  const record=await call('openTimeline',montage.id);
