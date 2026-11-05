@@ -1,0 +1,110 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { sniffMedia } from './providers.mjs';
+import { isLocalImageBatchPath, normalizeImageBatchRow } from '../shared/image-batch-import.mjs';
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
+const pathKey = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+const samePath = (a, b) => pathKey(a) === pathKey(b);
+const missingStat = file => fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+
+async function checkedDirectory(file, label, allowMissing = false) {
+  const stat = await missingStat(file);
+  if (!stat && allowMissing) return false;
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label}不存在、不是文件夹或包含链接，请检查原目录。`);
+  if (!samePath(await fs.realpath(file), file)) throw new Error(`${label}的实际路径已变化或包含链接，已停止写入。`);
+  return true;
+}
+
+async function checkedImage(file) {
+  const stat = await missingStat(file);
+  if (!stat?.isFile() || stat.isSymbolicLink() || !IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase())) throw new Error('母图不存在、不是支持的图片或是链接文件。');
+  if (!samePath(await fs.realpath(file), file)) throw new Error('母图的实际路径已变化，不能使用目录外的文件。');
+  const handle = await fs.open(file, 'r');
+  try {
+    const bytes = Buffer.alloc(64), { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    let media; try { media = sniffMedia(bytes.subarray(0, bytesRead)); } catch { throw new Error('母图文件内容不是有效图片。'); }
+    if (media?.kind !== 'image') throw new Error('母图文件内容不是有效图片。');
+  } finally { await handle.close(); }
+}
+
+// These fields are only created by a native-directory import. Ordinary row
+// updates preserve the persisted mapping rather than accepting renderer paths.
+export async function validateImageFolderMapping(row, { createOutput = false, checkMother = true } = {}) {
+  if (row?.outputMode !== 'source-children' || [row.sourceRoot, row.sourceFolder, row.motherPath].some(file => typeof file !== 'string' || !path.isAbsolute(file) || !isLocalImageBatchPath(file))) throw new Error('母图目录映射无效，请重新导入原目录。');
+  const root = path.resolve(row.sourceRoot), folder = path.resolve(row.sourceFolder), mother = path.resolve(row.motherPath);
+  if (!samePath(path.dirname(folder), root) || !samePath(path.dirname(mother), folder)) throw new Error('母图或类型目录超出已选择的原目录。');
+  if (row.sourceMode !== 'single' || row.sourcePaths?.length !== 1 || !samePath(row.sourcePaths[0], mother)) throw new Error('母图目录任务只能使用本类型的母图。');
+  await checkedDirectory(root, '已选择的根目录');
+  await checkedDirectory(folder, '类型目录');
+  if (checkMother) await checkedImage(mother);
+  const outputPath = path.join(folder, '子图');
+  const exists = await checkedDirectory(outputPath, '子图目录', true);
+  if (!exists && createOutput) {
+    try { await fs.mkdir(outputPath); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    await checkedDirectory(outputPath, '子图目录');
+  }
+  return outputPath;
+}
+
+function folderIdentity(folderName) {
+  const match = folderName.match(/^([a-z]+\d+)(?:[\s._\-—–]+(.*))?$/i);
+  return match ? { code: match[1].toUpperCase(), name: match[2]?.trim() || folderName } : { code: '', name: folderName };
+}
+
+export async function inspectImageTypeFolder(selectedFolder, { sourceRoot } = {}) {
+  if (typeof selectedFolder !== 'string' || !path.isAbsolute(selectedFolder) || !isLocalImageBatchPath(selectedFolder)) throw new Error('原目录子图模式需要本机的单个类型文件夹。');
+  const selectedStat = await missingStat(selectedFolder);
+  if (!selectedStat?.isDirectory() || selectedStat.isSymbolicLink()) throw new Error('类型目录不是普通文件夹，请勿选择链接或图片文件。');
+  const sourceFolder = await fs.realpath(selectedFolder);
+  const root = sourceRoot || path.dirname(sourceFolder);
+  if (typeof root !== 'string' || !path.isAbsolute(root) || !isLocalImageBatchPath(root)) throw new Error('类型目录的根目录无效。');
+  await checkedDirectory(root, '已选择的根目录');
+  if (!samePath(path.dirname(sourceFolder), root)) throw new Error('类型目录的实际路径超出已选择的根目录。');
+  const children = await fs.readdir(sourceFolder, { withFileTypes: true });
+  const images = children.filter(child => (child.isFile() || child.isSymbolicLink()) && IMAGE_EXTENSIONS.has(path.extname(child.name).toLowerCase()));
+  const named = images.filter(child => path.parse(child.name).name.trim() === '母图');
+  const mother = named.length === 1 ? named[0] : images.length === 1 ? images[0] : null;
+  if (named.length > 1) throw new Error('发现多张名为“母图”的图片，请只保留一个明确的母图。');
+  if (!mother) throw new Error(images.length ? '本层有多张图片且没有唯一的“母图”，请将参考图片命名为“母图”。' : '类型目录本层没有图片；子图目录不会作为参考来源。');
+  const motherPath = path.join(sourceFolder, mother.name);
+  const mapping = { outputMode: 'source-children', sourceRoot: root, sourceFolder, motherPath, sourceMode: 'single', sourcePaths: [motherPath] };
+  const outputPath = await validateImageFolderMapping(mapping);
+  return { ...mapping, outputPath, warnings: images.length > 1 ? [`仅使用 ${mother.name}，本层另外 ${images.length - 1} 张图片不参与生成。`] : [] };
+}
+
+// Read only: this does not create 子图, save rows, or call any model.
+export async function scanImageFolderImport(selectedRoot, { existingRows = [], settings = {} } = {}) {
+  if (typeof selectedRoot !== 'string' || !path.isAbsolute(selectedRoot) || !isLocalImageBatchPath(selectedRoot)) throw new Error('请选择本机的素材根目录。');
+  const selectedStat = await missingStat(selectedRoot);
+  if (!selectedStat?.isDirectory() || selectedStat.isSymbolicLink()) throw new Error('所选根目录不是普通文件夹，请勿选择链接或快捷方式。');
+  // Canonicalize the selected trust root, including macOS /var → /private/var.
+  const rootPath = await fs.realpath(selectedRoot);
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  const folders = entries.filter(entry => entry.isDirectory() || entry.isSymbolicLink()).sort((a, b) => {
+    const left = folderIdentity(a.name).code, right = folderIdentity(b.name).code;
+    if (Boolean(left) !== Boolean(right)) return left ? -1 : 1;
+    return (left || a.name).localeCompare(right || b.name, 'zh-CN', { numeric: true });
+  });
+  if (folders.length > 500) throw new Error('每次最多导入 500 个类型文件夹，请分批整理。');
+  const rows = [], errors = [], warnings = [], occupied = existingRows.map(row => ({ code: row.code }));
+  const importedFolders = new Set(existingRows.filter(row => row.outputMode === 'source-children' && row.sourceFolder).map(row => pathKey(row.sourceFolder)));
+  for (const entry of folders) {
+    const folderPath = path.join(rootPath, entry.name), outputPath = path.join(folderPath, '子图');
+    const normalized = normalizeImageBatchRow(folderIdentity(entry.name), { existingRows: occupied, settings });
+    const row = { sourceRoot: rootPath, folderPath, folderName: entry.name, code: normalized.values.code, name: normalized.values.name, motherPath: '', outputPath, values: normalized.values, errors: [...normalized.errors], warnings: [...normalized.warnings] };
+    if (importedFolders.has(pathKey(folderPath))) row.errors.push('这个类型目录已经导入，请编辑已有任务，避免重复生成。');
+    try {
+      const mapping = await inspectImageTypeFolder(folderPath, { sourceRoot: rootPath });
+      row.motherPath = mapping.motherPath;
+      row.values.sourceMode = 'single'; row.values.sourcePaths = [row.motherPath];
+      row.warnings.push(...mapping.warnings);
+    } catch (error) { row.errors.push(error.message); }
+    if (row.code) occupied.push({ code: row.code });
+    rows.push(row);
+  }
+  if (!rows.length) errors.push('根目录中没有类型子文件夹。请按“根目录 / A01-类型名 / 母图.png”整理后重试。');
+  if (entries.some(entry => entry.isFile())) warnings.push('根目录本层文件不导入，只读取各类型文件夹中的母图。');
+  const validCount = rows.filter(row => !row.errors.length).length;
+  return { rootPath, rows, rowCount: rows.length, validCount, invalidCount: rows.length - validCount, errors, warnings };
+}

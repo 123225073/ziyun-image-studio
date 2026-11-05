@@ -14,6 +14,7 @@ import { toSrt } from './render.mjs';
 import { alignSections } from '../shared/montage-batch.mjs';
 import { nextImageRowCode } from '../shared/image-rows.mjs';
 import { imageBatchCodeKey } from '../shared/image-batch-import.mjs';
+import { validateImageFolderMapping } from './image-folder-import.mjs';
 import { reviewSource, reviewTextKey, montageReviewCombination, montageReviewRequest, montageSuggestionRequest, parseMontageReview, parseMontageSuggestion } from './montage-review.mjs';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
@@ -219,6 +220,10 @@ function normalizedRow(row, previous) {
     templateId: String(row.templateId ?? previous?.templateId ?? ''), folderName: String(row.folderName || ''),
     imageBatch: previous?.imageBatch || null, imageBatchNumber: previous?.imageBatchNumber || 0,
     ...(previous?.batchImport ? { batchImport: clone(previous.batchImport) } : {}),
+    ...(previous?.outputMode === 'source-children' ? {
+      outputMode: 'source-children', sourceRoot: previous.sourceRoot, sourceFolder: previous.sourceFolder, motherPath: previous.motherPath,
+      sourceMode: 'single', sourcePaths: [previous.motherPath],
+    } : {}),
     // Optional slot variations are always explicit user inputs. Planning never
     // replaces the source description or edits saved row text.
     variations: Array.isArray(row.variations) ? row.variations.map(String).slice(0, 500) : [],
@@ -244,6 +249,7 @@ export class StudioService {
     }
     for (const name of ['rows', 'jobs', 'assets', 'formulas']) state[name] ||= [];
     state.imageBatchImports ||= [];
+    state.imageFolderImports ||= [];
     for (const row of state.rows) if (row.batchImport && ['pending', 'running'].includes(row.batchImport.status)) {
       row.batchImport.status = 'error';
       row.batchImport.error = '上次自动反推被中断，未自动重试。请核对后手动重试。';
@@ -374,6 +380,8 @@ export class StudioService {
     return this.serializeSubmission(() => {
       this.assertOpen();
       const index = this.state.rows.findIndex(item => item.id === row.id);
+      const previousMapping = this.state.rows[index];
+      if (previousMapping?.outputMode === 'source-children' && ((row.sourceMode != null && row.sourceMode !== 'single') || (row.sourcePaths != null && JSON.stringify(row.sourcePaths) !== JSON.stringify([previousMapping.motherPath])))) throw new Error('母图目录任务的参考来源已绑定，请整理原目录后重新导入；其他参数可以正常修改。');
       if (index < 0 && !String(row.code || '').trim()) row = { ...row, code: nextImageRowCode(this.state.rows) };
       const saved = normalizedRow(index < 0 && row.templateId == null ? {...row, templateId:this.state.settings.defaultTemplateId} : row, this.state.rows[index]);
       const previous = this.state.rows[index];
@@ -392,28 +400,68 @@ export class StudioService {
       reverseFailures: rows.filter(row => row.batchImport?.status === 'error').map(row => ({ id: row.id, code: row.code, message: row.batchImport.error })) };
   }
 
+  // Native IPC owns the preview token and re-scans it before calling this method.
+  // It is deliberately not exposed as a generic renderer service method.
+  async importImageFolderBatch(previewId, entries) {
+    return this.serializeSubmission(async () => {
+      this.assertOpen();
+      const previous = this.state.imageFolderImports.find(item => item.id === previewId);
+      if (previous) return { importedIds: [...previous.ids], importedCount: previous.ids.length };
+      if (typeof previewId !== 'string' || !previewId || !Array.isArray(entries) || !entries.length || entries.length > 500 || entries.some(entry => !entry || !Array.isArray(entry.errors) || entry.errors.length)) throw new Error('母图目录预览无效，请重新选择目录。');
+      const codes = new Set(this.state.rows.map(row => imageBatchCodeKey(row.code)));
+      const folderKey = folder => process.platform === 'win32' ? path.resolve(folder).toLowerCase() : path.resolve(folder);
+      const folders = new Set(this.state.rows.filter(row => row.outputMode === 'source-children').map(row => folderKey(row.sourceFolder)));
+      const imported = [];
+      for (const entry of entries) {
+        const row = normalizedRow({ ...entry.values, id: uid() });
+        if (!row.code || codes.has(imageBatchCodeKey(row.code))) throw new Error(`编号 ${row.code || '（空）'} 已存在，请重新预览。`);
+        codes.add(imageBatchCodeKey(row.code));
+        Object.assign(row, { outputMode: 'source-children', sourceRoot: entry.sourceRoot, sourceFolder: entry.folderPath, motherPath: entry.motherPath });
+        await validateImageFolderMapping(row);
+        if (folders.has(folderKey(row.sourceFolder))) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
+        folders.add(folderKey(row.sourceFolder)); imported.push(row);
+      }
+      this.assertOpen();
+      const ids = imported.map(row => row.id), previousRows = this.state.rows, previousImports = this.state.imageFolderImports;
+      this.state.rows = [...previousRows, ...imported];
+      this.state.imageFolderImports = [...previousImports, { id: previewId, ids, createdAt: now() }];
+      try { this.changed(); } catch (error) { this.state.rows = previousRows; this.state.imageFolderImports = previousImports; throw error; }
+      return { importedIds: ids, importedCount: ids.length };
+    });
+  }
+
   // Called only with the native dialog's validated, cached workbook preview.
   async importImageBatch(previewId, entries) {
     this.assertOpen();
     if (this.imageImportTasks.has(previewId)) return this.imageImportTasks.get(previewId);
     const task = (async () => {
-      const created = await this.serializeSubmission(() => {
+      const created = await this.serializeSubmission(async () => {
         this.assertOpen();
         const previous = this.state.imageBatchImports.find(item => item.id === previewId);
         if (previous) return { ids: previous.ids, existing: true };
         if (typeof previewId !== 'string' || !previewId || !Array.isArray(entries) || !entries.length || entries.length > 500 || entries.some(entry => entry.errors?.length)) throw new Error('导入预览无效，请重新选择 Excel。');
         const codes = new Set(this.state.rows.map(row => imageBatchCodeKey(row.code)));
-        const imported = entries.map(entry => {
+        const folders = new Set(this.state.rows.filter(row => row.outputMode === 'source-children').map(row => process.platform === 'win32' ? path.resolve(row.sourceFolder).toLowerCase() : path.resolve(row.sourceFolder)));
+        const imported = [];
+        for (const entry of entries) {
           const values = entry.values || {};
           const code = String(values.code || '').trim();
           if (!code || codes.has(imageBatchCodeKey(code))) throw new Error(`编号 ${code || '（空）'} 已存在或无效，请重新预览。`);
           codes.add(imageBatchCodeKey(code));
           const row = normalizedRow({ ...values, id: uid(), code });
+          if (entry.outputMapping) {
+            const mapping = entry.outputMapping;
+            Object.assign(row, { outputMode: 'source-children', sourceRoot: mapping.sourceRoot, sourceFolder: mapping.sourceFolder, motherPath: mapping.motherPath });
+            await validateImageFolderMapping(row);
+            const key = process.platform === 'win32' ? path.resolve(row.sourceFolder).toLowerCase() : path.resolve(row.sourceFolder);
+            if (folders.has(key)) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
+            folders.add(key);
+          }
           const automatic = Boolean(entry.autoDescribe) && !row.referencePrompt.trim();
           row.batchImport = { id: previewId, excelRow: entry.excelRow, autoDescribe: automatic,
             instructions: String(entry.describeInstructions || ''), status: automatic ? 'pending' : 'skipped', error: '' };
-          return row;
-        });
+          imported.push(row);
+        }
         const previousRows = this.state.rows;
         const previousImports = this.state.imageBatchImports;
         const ids = imported.map(row => row.id);
@@ -725,6 +773,7 @@ export class StudioService {
           .filter(slot => !occupied.has(slot)).slice(0, Math.max(0, row.count - occupied.size));
         if (!slots.length) continue;
         if (!row.referencePrompt.trim() && !row.userPrompt.trim()) throw new Error(`「${row.name || row.code || '未命名行'}」尚未填写提示词。`);
+        if (row.outputMode === 'source-children') await validateImageFolderMapping(row);
         let pool = [];
         for (const source of row.sourcePaths) {
           const stat = await fsp.stat(path.resolve(source)).catch(() => null);
@@ -1326,6 +1375,7 @@ export class StudioService {
     this.assertOpen();
     const row = this.state.rows.find(item => item.id === rowId);
     if (!row) throw new Error('该行不存在。');
+    if (row.outputMode === 'source-children') await validateImageFolderMapping(row);
     const provider = this.provider('vision');
     let refs = [];
     for (const file of row.sourcePaths) {
@@ -1453,6 +1503,7 @@ export class StudioService {
         return;
       }
       if (job.kind === 'image') {
+        if (job.snapshot.row?.outputMode === 'source-children') await validateImageFolderMapping(job.snapshot.row);
         if (job.snapshot.imagePlanning) await this.prepareImageJob(job);
         if (this.closing || signal.aborted) return;
         this.updateJob(job, { status: 'running', error: '' });
@@ -1615,8 +1666,8 @@ export class StudioService {
     if (this.closing) return;
     this.updateJob(job, { localPath, result: { ...job.result, localPath }, status: 'succeeded', error: '' });
     // Local success remains usable even if an external output drive is offline.
-    if (job.snapshot.autoExport && job.snapshot.outputDir) {
-      try { const exported = await this.exportOne(job, job.snapshot.outputDir); if (!this.closing) this.updateJob(job, { exportedPath: exported }); }
+    if (job.snapshot.autoExport && (job.snapshot.outputDir || (job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children'))) {
+      try { const exported = await this.exportOne(job, job.snapshot.outputDir); if (!this.closing) this.updateJob(job, { exportedPath: exported, exportError: '' }); }
       catch (error) { if (!this.closing) this.updateJob(job, { exportError: redact(error.message || error) }); }
     }
     // Once a local file is confirmed, binary responses need no duplicate copy in SQLite.
@@ -1630,9 +1681,13 @@ export class StudioService {
   async exportOne(job, outputDir) {
     if (!job.localPath || !(await fsp.stat(job.localPath).catch(() => null))?.isFile()) throw new Error('成功文件已被移动或删除，无法导出。');
     const folder = job.snapshot.row?.folderName || job.snapshot.row?.name || job.snapshot.config?.name || job.kind;
-    const directory = await directoryUnder(path.resolve(outputDir), job.kind === 'image' ? imageOutputFolders(job) : [folder]);
+    const sourceChildren = job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children';
+    const directory = sourceChildren
+      ? await validateImageFolderMapping(job.snapshot.row, { createOutput: true, checkMother: false })
+      : await directoryUnder(path.resolve(outputDir), job.kind === 'image' ? imageOutputFolders(job) : [folder]);
     const source = path.resolve(job.localPath);
-    const stem = job.kind === 'speech' ? `${safeSegment(job.snapshot.config.name)}_${job.slot + 1}_${path.parse(source).name.slice(0, 8)}` : safeSegment(path.parse(source).name);
+    const stem = sourceChildren ? `${safeSegment(job.snapshot.row.code)}_${String(job.slot + 1).padStart(4, '0')}_${job.id.slice(0, 8)}`
+      : job.kind === 'speech' ? `${safeSegment(job.snapshot.config.name)}_${job.slot + 1}_${path.parse(source).name.slice(0, 8)}` : safeSegment(path.parse(source).name);
     const extension = path.extname(source).toLowerCase();
     for (let suffix = 0; suffix < 10000; suffix++) {
       const target = path.join(directory, `${stem}${suffix ? `_${suffix}` : ''}${extension}`);
@@ -1667,10 +1722,12 @@ export class StudioService {
   async exportJobs(ids, outputDir) {
     this.assertOpen();
     const destination = outputDir || this.state.settings.outputDir;
-    if (!destination) throw new Error('请先选择导出目录。');
     const set = ids ? new Set(ids) : null;
     const jobs = this.state.jobs.filter(job => (set ? set.has(job.id) : job.selected) && job.status === 'succeeded');
     if (!jobs.length) throw new Error('所选任务没有成功文件可导出。');
+    if (!destination && jobs.some(job => job.kind !== 'image' || job.snapshot.row?.outputMode !== 'source-children')) throw new Error('所选普通任务需要先选择导出目录；母图目录任务会回到各自的子图目录。');
+    // Validate every trusted destination before exporting any item in a mixed batch.
+    for (const job of jobs) if (job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children') await validateImageFolderMapping(job.snapshot.row, { checkMother: false });
     const result = [];
     for (const job of jobs) {
       const exportedPath = await this.exportOne(job, destination);

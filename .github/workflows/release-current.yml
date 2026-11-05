@@ -98,6 +98,9 @@ jobs:
       - name: Installed image row selection and deletion
         timeout-minutes: 4
         run: node scripts/verify-image-rows.mjs
+      - name: Installed mother image folders and child output
+        timeout-minutes: 6
+        run: node scripts/verify-image-folder.mjs
       - name: Installed AI review and approval flow
         timeout-minutes: 6
         run: node scripts/verify-montage-review.mjs

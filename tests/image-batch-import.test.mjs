@@ -27,7 +27,7 @@ test('downloaded template has an empty task sheet, separate examples and actual 
  const workbook=new ExcelJS.Workbook();await workbook.xlsx.readFile(file);
  assert.deepEqual(workbook.worksheets.map(sheet=>sheet.name),['任务','说明','示例']);
  assert.equal(workbook.getWorksheet('任务').actualRowCount,1);
- assert.equal(workbook.getWorksheet('示例').actualRowCount,3);
+ assert.equal(workbook.getWorksheet('示例').actualRowCount,4);
  const guide=JSON.stringify(workbook.getWorksheet('说明').getSheetValues());assert.match(guide,/当前项目/);assert.match(guide,/500 行/);
  const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.rowCount,0);assert.equal(parsed.reverseCount,0);assert.deepEqual(parsed.errors,[]);
 });
@@ -78,7 +78,7 @@ test('malformed headers, excessive sheets, rows, columns and cell content are bo
  await book(file,[{name:'标题问题'}],(_,sheet)=>{sheet.getCell('B1').value='未知列'});assert.match((await parseImageBatchWorkbook(file,{settings})).errors.join(' '),/不在模板/);
  await book(file,[],workbook=>{for(let i=0;i<5;i++)workbook.addWorksheet(`多余${i}`)});await assert.rejects(parseImageBatchWorkbook(file),/最多保留 5/);
  await book(file,Array.from({length:501},(_,index)=>({name:`行${index}`})));await assert.rejects(parseImageBatchWorkbook(file),/最多导入 500/);
- await book(file,[],(_,sheet)=>{sheet.getCell('M1').value='额外列'});await assert.rejects(parseImageBatchWorkbook(file),/最多 12 列/);
+ await book(file,[],(_,sheet)=>{sheet.getCell('N1').value='额外列'});await assert.rejects(parseImageBatchWorkbook(file),/最多 13 列/);
 });
 
 test('compressed oversized content is rejected before ExcelJS loads any worksheet',async t=>{
@@ -92,4 +92,23 @@ test('ambiguous project names require an ID, while an explicit ID is accepted',(
  const duplicate={templates:[{id:'one',name:'同名'},{id:'two',name:'同名'}],defaultTemplateId:'one'};
  assert.match(normalizeImageBatchRow({name:'任务',template:'同名'},{settings:duplicate}).errors.join(' '),/名称重复/);
  assert.deepEqual(normalizeImageBatchRow({name:'任务',template:'two'},{settings:duplicate}).errors,[]);
+});
+
+test('optional export location maps a type folder to its mother and child output, while old 12-column sheets stay ordinary',async t=>{
+ const {dir,file}=await fixture(t),typeDir=path.join(dir,'C01-素材类型');await fs.mkdir(path.join(typeDir,'子图'),{recursive:true});
+ await fs.writeFile(path.join(typeDir,'母图.png'),png);await fs.writeFile(path.join(typeDir,'其他.png'),png);await fs.writeFile(path.join(typeDir,'子图','旧结果.png'),png);
+ await book(file,[{name:'母图行',sourceInput:'C01-素材类型',outputLocation:'原目录子图',autoDescribe:'X'}]);
+ const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.validCount,1);assert.equal(parsed.reverseCount,1);
+ const row=parsed.rows[0],realTypeDir=await fs.realpath(typeDir);assert.equal(row.outputLocation,'原目录子图');assert.equal(row.outputMapping.outputMode,'source-children');assert.equal(row.outputMapping.outputPath,path.join(realTypeDir,'子图'));assert.equal(row.values.sourceMode,'single');assert.deepEqual(row.values.sourcePaths,[path.join(realTypeDir,'母图.png')]);
+ assert.equal('outputMode' in row.values,false,'映射不混入普通行字段');
+ const duplicate=await parseImageBatchWorkbook(file,{settings,existingRows:[{code:'Z99',outputMode:'source-children',sourceFolder:realTypeDir}]});assert.equal(duplicate.invalidCount,1);assert.match(duplicate.rows[0].errors.join(' '),/已导入/);
+ await book(file,[{name:'旧12列',sourceInput:'C01-素材类型'}],(_,sheet)=>{sheet.spliceColumns(13,1)});
+ const legacy=await parseImageBatchWorkbook(file,{settings});assert.equal(legacy.validCount,1);assert.equal(legacy.rows[0].outputMapping,undefined);assert.equal(legacy.rows[0].values.sourcePaths.length,2);
+});
+
+test('source-child export requires a valid type directory and rejects competing output fields',async t=>{
+ const {file}=await fixture(t);
+ await book(file,[{name:'错误导出位置',outputLocation:'任意外部位置'},{name:'需要目录',outputLocation:'原目录子图'},{name:'不能是图',sourceInput:'素材/图1.png',outputLocation:'原目录子图'},{name:'不自动任选',sourceInput:'素材',outputLocation:'原目录子图'},{name:'冲突子目录',sourceInput:'素材',outputLocation:'原目录子图',folderName:'另一个地方'}]);
+ const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.invalidCount,5);assert.equal(parsed.reverseCount,0);
+ assert.match(parsed.rows[0].errors.join(' '),/导出位置/);assert.match(parsed.rows[1].errors.join(' '),/需要填写/);assert.match(parsed.rows[4].errors.join(' '),/清空保存子目录/);
 });

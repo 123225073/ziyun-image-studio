@@ -55,7 +55,7 @@ try{
  await openImporter();
  await application.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file})},template);
  await dialog().getByRole('button',{name:'下载 Excel 模板',exact:true}).click();await dialog().getByText(`模板已保存：${template}`,{exact:true}).waitFor();
- const downloaded=new ExcelJS.Workbook();await downloaded.xlsx.readFile(template);assert.equal(downloaded.getWorksheet('任务').actualRowCount,1);assert.equal(downloaded.getWorksheet('示例').actualRowCount,3);
+ const downloaded=new ExcelJS.Workbook();await downloaded.xlsx.readFile(template);assert.equal(downloaded.getWorksheet('任务').actualRowCount,1);assert.equal(downloaded.getWorksheet('示例').actualRowCount,4);
  await choose(workbookPath);
  assert.equal(await dialog().locator('.image-import-table tbody tr').count(),3);assert.equal(requests.length,0);
  assert.equal((await call('getState')).rows.length,1,'预览不新增任务');

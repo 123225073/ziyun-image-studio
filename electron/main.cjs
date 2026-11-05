@@ -7,6 +7,7 @@ app.setName('子云影像工坊');
 if(process.env.ZIYUN_DATA_DIR)app.setPath('userData',path.resolve(process.env.ZIYUN_DATA_DIR));
 const dataDir=app.getPath('userData');
 const imageBatchPreviews=new Map();
+const imageFolderPreviews=new Map();
 async function persistVault(){await fsp.mkdir(dataDir,{recursive:true});const temp=vaultFile+'.tmp';await fsp.writeFile(temp,JSON.stringify(vault),{mode:0o600});await fsp.rename(temp,vaultFile);}
 function keyFor(id){if(!vault[id])return '';if(!safeStorage.isEncryptionAvailable())throw new Error('Windows安全存储不可用，无法读取模型密钥。');return safeStorage.decryptString(Buffer.from(vault[id],'base64'));}
 const accountVaultId=id=>'oairegbox-account:'+id;
@@ -121,6 +122,30 @@ async function setup(){
     await shell.openExternal(OAIREGBOX_CONSOLE+route);
     return {ok:true};
    }if(method==='testProvider'||method==='models'){const s=await service.getState();const p=s.settings.providers.find(p=>p.id===(typeof args[0]==='string'?args[0]:args[0]?.id));if(!p)throw new Error('请先保存连接。');const result=await providerRunner('models',{}, {provider:p});return {ok:true,value:{ok:true,message:TTS_PROTOCOLS.includes(p.protocol)?'语音配置已校验，型号来自官方目录。账号权限请通过生成试听验证。':`已连接，返回${result.models?.length||0}个模型。此检查不代表所有生成能力通过。`,models:result.models,detail:result.text}};}
+   if(method==='previewImageFolderImport'){
+    let folder=args[0];
+    if(folder){if(typeof folder!=='string'||!path.isAbsolute(folder)||!selectedPaths.has(folder))throw new Error('请先通过文件夹选择器选择导入目录。');}
+    else{const input=await dialog.showOpenDialog(win,{title:'选择包含各素材类型的总文件夹',properties:['openDirectory']});if(input.canceled||!input.filePaths.length)return {ok:true,value:null};folder=input.filePaths[0];selectedPaths.add(folder);}
+    const {scanImageFolderImport}=await import('./image-folder-import.mjs');
+    const plan=await scanImageFolderImport(folder,{existingRows:service.state.rows,settings:service.state.settings});
+    for(const row of plan.rows)if(row.motherPath&&!row.errors.length)selectedPaths.add(row.motherPath);
+    const previewId=randomUUID();
+    imageFolderPreviews.set(previewId,plan);
+    if(imageFolderPreviews.size>20)imageFolderPreviews.delete(imageFolderPreviews.keys().next().value);
+    return {ok:true,value:{...plan,previewId}};
+   }
+   if(method==='importImageFolderBatch'){
+    const previewId=args[0];
+    if(service.state.imageFolderImports?.some(item=>item.id===previewId))return {ok:true,value:await service.importImageFolderBatch(previewId,[])};
+    const preview=imageFolderPreviews.get(previewId);
+    if(!preview||preview.errors.length||preview.invalidCount||!preview.rowCount)throw new Error('文件夹预览不存在或有未处理的问题，请重新选择目录。');
+    const {scanImageFolderImport}=await import('./image-folder-import.mjs');
+    const current=await scanImageFolderImport(preview.rootPath,{existingRows:service.state.rows,settings:service.state.settings});
+    if(current.errors.length||current.invalidCount||JSON.stringify(current.rows)!==JSON.stringify(preview.rows))throw new Error('母图、目录内容或任务编号已变化，请重新预览再导入。');
+    const result=await service.importImageFolderBatch(previewId,current.rows);
+    for(const row of current.rows)selectedPaths.add(row.motherPath);
+    return {ok:true,value:result};
+   }
    if(method==='downloadImageBatchTemplate'){
     const output=await dialog.showSaveDialog(win,{title:'保存图片任务导入模板',defaultPath:path.join(app.getPath('downloads'),'图片任务批量导入模板.xlsx'),filters:[{name:'Excel 模板',extensions:['xlsx']}]});
     if(output.canceled||!output.filePath)return {ok:true,value:null};

@@ -1,7 +1,7 @@
 import {nextImageRowCode} from './image-rows.mjs';
 
 export const IMAGE_BATCH_SHEET = '任务';
-export const IMAGE_BATCH_LIMITS = Object.freeze({fileBytes:10*1024*1024,expandedBytes:32*1024*1024,archiveEntries:200,sheets:5,rows:500,columns:12,cellCharacters:12000,totalCharacters:2000000});
+export const IMAGE_BATCH_LIMITS = Object.freeze({fileBytes:10*1024*1024,expandedBytes:32*1024*1024,archiveEntries:200,sheets:5,rows:500,columns:13,cellCharacters:12000,totalCharacters:2000000});
 export const IMAGE_BATCH_COLUMNS = Object.freeze([
   {key:'code',title:'编号',width:14,defaultText:'沿用最后一行分类递增',help:'可留空自动编号，例如 A01、A02。已存在的编号不能重复。'},
   {key:'name',title:'类型名称',width:20,defaultText:'未命名类型',help:'填写易识别的素材类型名称，可留空后在应用里补充。'},
@@ -15,6 +15,7 @@ export const IMAGE_BATCH_COLUMNS = Object.freeze([
   {key:'resolution',title:'分辨率',width:13,defaultText:'1K',help:'可选：1K、2K、4K。'},
   {key:'template',title:'项目规范',width:28,defaultText:'当前默认项目规范',help:'可填应用中现有规范的名称或 ID；填“不使用模板”表示不套用。'},
   {key:'folderName',title:'保存子目录',width:30,defaultText:'按类型名称自动创建',help:'可选的输出子目录，不能填写绝对路径或 ..。序号和批次由应用添加。'},
+  {key:'outputLocation',title:'导出位置',width:22,defaultText:'系统输出目录',help:'留空或填写“系统输出目录”沿用底部输出根目录；填写“原目录子图”时，参考素材路径必须为单个类型目录，使用其中母图，结果写回该目录/子图。此模式无需填写保存子目录。'},
 ]);
 
 const text = value => String(value ?? '').trim();
@@ -57,5 +58,9 @@ export function normalizeImageBatchRow(raw,{existingRows=[],settings={}}={}) {
   const sourceInput=get('sourceInput');
   if(!isLocalImageBatchPath(sourceInput))errors.push('参考素材路径必须是本机图片或文件夹路径，不支持网络共享或设备路径。');
   if(autoDescribe&&!sourceInput)errors.push('自动反推需要填写参考素材路径。');
-  return {values:{code,name,sourceMode:'single',sourcePaths:[],referencePrompt,userPrompt,count,ratio,resolution,templateId,folderName},sourceInput,autoDescribe,describeInstructions,defaultedFields,templateName:templates.find(item=>item.id===templateId)?.name||'不使用模板',errors,warnings};
+  const outputLocation=get('outputLocation')||'系统输出目录';
+  if(!['系统输出目录','原目录子图'].includes(outputLocation))errors.push('导出位置应留空、填写“系统输出目录”或“原目录子图”。');
+  if(outputLocation==='原目录子图'&&!sourceInput)errors.push('原目录子图模式需要填写单个类型目录的参考素材路径。');
+  if(outputLocation==='原目录子图'&&folderName)errors.push('原目录子图模式固定保存到类型目录/子图，请清空保存子目录。');
+  return {values:{code,name,sourceMode:'single',sourcePaths:[],referencePrompt,userPrompt,count,ratio,resolution,templateId,folderName},sourceInput,outputLocation,autoDescribe,describeInstructions,defaultedFields,templateName:templates.find(item=>item.id===templateId)?.name||'不使用模板',errors,warnings};
 }

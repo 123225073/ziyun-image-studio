@@ -3,6 +3,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import ExcelJS from 'exceljs';
 import {sniffMedia} from './providers.mjs';
+import {inspectImageTypeFolder} from './image-folder-import.mjs';
 import {IMAGE_BATCH_COLUMNS,IMAGE_BATCH_LIMITS,IMAGE_BATCH_SHEET,isLocalImageBatchPath,normalizeImageBatchRow} from '../shared/image-batch-import.mjs';
 
 // ExcelJS already ships unzipper. Read its dependency so packaged builds use
@@ -70,7 +71,7 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
   const sheet=workbook.getWorksheet(IMAGE_BATCH_SHEET);
   if(!sheet)throw new Error('找不到“任务”工作表，请下载模板并在“任务”表中填写。');
   if(sheet.rowCount>IMAGE_BATCH_LIMITS.rows+1)throw new Error(`“任务”表最多导入 ${IMAGE_BATCH_LIMITS.rows} 行，请拆分文件。`);
-  if(sheet.columnCount>IMAGE_BATCH_LIMITS.columns)throw new Error('“任务”表最多 12 列，请使用模板中的列。');
+  if(sheet.columnCount>IMAGE_BATCH_LIMITS.columns)throw new Error(`“任务”表最多 ${IMAGE_BATCH_LIMITS.columns} 列，请使用模板中的列。`);
   const errors=[],warnings=[],rows=[],headers=new Map();let totalCharacters=0;
   for(let column=1;column<=sheet.columnCount;column++){
     const heading=readCell(sheet.getCell(1,column),errors).trim();
@@ -81,6 +82,8 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
   }
   if(!headers.size)errors.push('“任务”表第一行需要模板中的中文列标题。');
   const occupied=existingRows.map(row=>({code:row.code}));
+  const folderKey=file=>process.platform==='win32'?path.resolve(file).toLowerCase():path.resolve(file);
+  const occupiedFolders=new Set(existingRows.filter(row=>row.outputMode==='source-children'&&row.sourceFolder).map(row=>folderKey(row.sourceFolder)));
   for(let excelRow=2;excelRow<=sheet.rowCount;excelRow++){
     const raw={},cellErrors=[];let hasContent=false;
     for(const [column,key]of headers){
@@ -101,7 +104,15 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
         row.resolvedSourcePath=path.resolve(path.dirname(filePath),sourceInput);
         try{
           if(!isLocalImageBatchPath(row.resolvedSourcePath))throw new Error('参考素材路径不支持网络共享或设备路径。');
-          const source=await resolveSource(row.resolvedSourcePath);
+          let source;
+          if(row.outputLocation==='原目录子图'){
+            row.outputMapping=await inspectImageTypeFolder(row.resolvedSourcePath);
+            const key=folderKey(row.outputMapping.sourceFolder);
+            if(occupiedFolders.has(key))throw new Error('这个类型目录已导入或在本表中重复，请编辑已有任务或移除重复行。');
+            occupiedFolders.add(key);
+            source=await resolveSource(row.outputMapping.motherPath);
+            row.warnings.push(...(row.outputMapping.warnings||[]));
+          }else source=await resolveSource(row.resolvedSourcePath);
           if(!source||!Array.isArray(source.sourcePaths)||!source.sourcePaths.length||source.sourcePaths.length>500||!source.sourcePaths.every(file=>typeof file==='string'&&path.isAbsolute(file)))throw new Error('参考素材路径未返回有效图片。');
           row.values.sourceMode=source.sourceMode==='folder'?'folder':'single';row.values.sourcePaths=[...new Set(source.sourcePaths)];
         }catch(error){row.errors.push(error.message||'无法读取参考素材。');}
@@ -121,11 +132,12 @@ export async function writeImageBatchTemplate(filePath,{settings={}}={}){
   tasks.columns=IMAGE_BATCH_COLUMNS.map(column=>({header:column.title,key:column.key,width:column.width,style:{numFmt:'@',alignment:{vertical:'top',wrapText:true}}}));
   const header=tasks.getRow(1);header.height=30;
   header.eachCell((cell,index)=>{cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF126453'}};cell.font={bold:true,color:{argb:'FFFFFFFF'},size:11};cell.note=IMAGE_BATCH_COLUMNS[index-1].help;});
-  tasks.autoFilter='A1:L1';
+  tasks.autoFilter='A1:M1';
   tasks.dataValidations.add('F2:F501',{type:'list',allowBlank:true,formulae:['"X"'],showErrorMessage:true,error:'仅填 X 开启自动反推，留空关闭。'});
   tasks.dataValidations.add('H2:H501',{type:'whole',operator:'between',allowBlank:true,formulae:[1,100],showErrorMessage:true,error:'请输入 1–100 的整数。'});
   tasks.dataValidations.add('I2:I501',{type:'list',allowBlank:true,formulae:['"跟随原图,9:16,16:9,1:1,3:4,4:3"']});
   tasks.dataValidations.add('J2:J501',{type:'list',allowBlank:true,formulae:['"1K,2K,4K"']});
+  tasks.dataValidations.add('M2:M501',{type:'list',allowBlank:true,formulae:['"系统输出目录,原目录子图"'],showErrorMessage:true,error:'请选择系统输出目录或原目录子图。'});
   const guide=workbook.addWorksheet('说明');guide.columns=[{width:22},{width:34},{width:100}];
   guide.addRow(['填写方式','只填写“任务”表','每行一个图片任务；可以在单元格内换行。示例不参与导入。']);
   guide.addRow(['导入方式','先预览，再确认','只新增任务，不覆盖现有行，不会自动生成图片。']);
@@ -138,11 +150,12 @@ export async function writeImageBatchTemplate(filePath,{settings={}}={}){
   guide.addRow([]);guide.addRow(['当前项目规范','规范 ID','规范名称']);
   for(const template of settings.templates||[])guide.addRow(['可选规范',template.id,template.name]);
   guide.eachRow(row=>{row.alignment={vertical:'top',wrapText:true};row.height=34;});
-  for(const number of [1,7,21]){const row=guide.getRow(number);row.font={bold:true,color:{argb:'FF126453'}};}
+  for(const number of [1,7,22]){const row=guide.getRow(number);row.font={bold:true,color:{argb:'FF126453'}};}
   const example=workbook.addWorksheet('示例');example.columns=IMAGE_BATCH_COLUMNS.map(column=>({header:column.title,key:column.key,width:column.width,style:{numFmt:'@',alignment:{vertical:'top',wrapText:true}}}));
   example.addRow({code:'A01',name:'示例：手工提示词',sourceInput:'素材/参考图.png',referencePrompt:'白色背景中的商品包装，保留整体构图。',userPrompt:'替换包装颜色，保留其他内容。'});
   example.addRow({code:'A02',name:'示例：自动反推',sourceInput:'素材/参考图文件夹',userPrompt:'保持界面结构，调整指定图片。',autoDescribe:'X',describeInstructions:'重点描述主体和界面布局，使用中文。',count:3,ratio:'3:4',resolution:'2K',template:'不使用模板'});
-  example.getRow(1).font={bold:true,color:{argb:'FF126453'}};example.getRow(2).height=65;example.getRow(3).height=65;
+  example.addRow({code:'B01',name:'示例：母图目录',sourceInput:'素材/B01-类型名称',userPrompt:'保留母图构图，按本行要求调整。',autoDescribe:'X',outputLocation:'原目录子图'});
+  example.getRow(1).font={bold:true,color:{argb:'FF126453'}};for(const number of [2,3,4])example.getRow(number).height=65;
   await workbook.xlsx.writeFile(filePath);
   return {filePath};
 }
