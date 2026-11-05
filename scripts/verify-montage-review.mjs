@@ -87,7 +87,7 @@ const fillCandidates = async (section, values) => {
     await page.getByLabel(`${section} 段候选文案 ${index + 1}`, { exact: true }).fill(values[index]);
   }
 };
-const candidateCopy = state => state.montageSetup.sections.map(section => section.candidates);
+const candidateCopy = state => state.montageSetup?.sections?.map(section => section.candidates) || [];
 const accept = async (count, cancelFirst = false) => {
   await button(`检查并采纳建议（${count}）`).click();
   const dialog = page.getByRole('dialog', { name: '采纳文案建议', exact: true });
