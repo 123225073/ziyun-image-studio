@@ -27,7 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || format('refs/tags/{0}', github.ref_name) }}
+          fetch-depth: 0
+      - name: Verify tagged application inputs
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A manual validation replay may update tests, never the application being released.
+          git diff --exit-code "refs/tags/$RELEASE_TAG" HEAD -- electron shared src package.json package-lock.json vite.config.js index.html runtime
       - uses: actions/setup-node@v4
         with:
           node-version: 22
