@@ -1,0 +1,167 @@
+name: Release current Windows and macOS
+on:
+  push:
+    tags: ['v0.4.*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to build and publish
+        required: true
+        default: v0.4.0
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2025, platform: windows, arch: x64}
+          - {runner: macos-15, platform: mac, arch: arm64}
+          - {runner: macos-15-intel, platform: mac, arch: x64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Prepare isolated media test runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+          python -m venv "$RUNNER_TEMP/media-test"
+          if [ "$RUNNER_OS" = Windows ]; then py="$RUNNER_TEMP/media-test/Scripts/python.exe"; else py="$RUNNER_TEMP/media-test/bin/python"; fi
+          "$py" -m pip install --only-binary=:all: imageio-ffmpeg==0.6.0
+          ffmpeg=$("$py" -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')
+          echo "ZIYUN_FFMPEG_PATH=$ffmpeg" >> "$GITHUB_ENV"
+          "$ffmpeg" -hide_banner -filters | grep -E '[[:space:]]subtitles[[:space:]]'
+      - name: Service and actual media tests
+        run: npm test
+      - name: Build Windows x64
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath runtime/ffmpeg.exe) { throw 'Public installers use separately installed FFmpeg.' }
+          npm run package -- --publish never
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = (Resolve-Path -LiteralPath "release/$version/ZiyunStudio-Setup-$version.exe").Path
+          $destination = Join-Path $env:RUNNER_TEMP 'ZiyunStudio'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S','/currentuser',('/D='+$destination)) -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(90000)) { throw 'Installer timed out' }
+          if ($process.ExitCode) { throw "Installer failed: $($process.ExitCode)" }
+          $exe = (Resolve-Path -LiteralPath (Join-Path $destination '子云影像工坊.exe')).Path
+          "ZIYUN_TEST_EXE=$exe" >> $env:GITHUB_ENV
+      - name: Build macOS disk image
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run package:mac -- --${{ matrix.arch }}
+          version=$(node -p 'require("./package.json").version')
+          app=$(find "release/$version" -name '子云影像工坊.app' -type d -print -quit)
+          test -n "$app"
+          exe="$app/Contents/MacOS/子云影像工坊"
+          file "$exe" | grep -E '${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}'
+          codesign --verify --deep --strict "$app"
+          hdiutil verify "release/$version/ZiyunStudio-$version-mac-${{ matrix.arch }}.dmg"
+          mounted=$(mktemp -d)
+          hdiutil attach "release/$version/ZiyunStudio-$version-mac-${{ matrix.arch }}.dmg" -readonly -nobrowse -mountpoint "$mounted"
+          trap 'hdiutil detach "$mounted"' EXIT
+          installed="$RUNNER_TEMP/installed/子云影像工坊.app"
+          mkdir -p "$RUNNER_TEMP/installed"
+          ditto "$mounted/子云影像工坊.app" "$installed"
+          codesign --verify --deep --strict "$installed"
+          echo "ZIYUN_TEST_EXE=$installed/Contents/MacOS/子云影像工坊" >> "$GITHUB_ENV"
+      - name: Installed application persistence
+        timeout-minutes: 4
+        run: node scripts/verify-installed.mjs
+      - name: Installed batch, editor and export flow
+        timeout-minutes: 12
+        run: node scripts/verify-batch-montage.mjs
+      - name: Installed Excel import and batch operations
+        timeout-minutes: 6
+        run: node scripts/verify-image-batch.mjs
+      - name: Installed image row selection and deletion
+        timeout-minutes: 4
+        run: node scripts/verify-image-rows.mjs
+      - name: Installed AI review and approval flow
+        timeout-minutes: 6
+        run: node scripts/verify-montage-review.mjs
+      - name: Installed timeline save and export edit lock
+        timeout-minutes: 4
+        run: node scripts/verify-timeline-working.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/${{ env.PACKAGE_VERSION }}/ZiyunStudio-Setup-*.exe
+            release/${{ env.PACKAGE_VERSION }}/ZiyunStudio-*-mac-*.dmg
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            test-output/*/result.json
+            test-output/*/*.png
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          path: assets
+          merge-multiple: true
+      - name: Publish all platforms after verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          test "$RELEASE_TAG" = "v$version"
+          names=("ZiyunStudio-Setup-$version.exe" "ZiyunStudio-$version-mac-arm64.dmg" "ZiyunStudio-$version-mac-x64.dmg")
+          for name in "${names[@]}"; do test -s "assets/$name"; done
+          (cd assets && sha256sum "${names[@]}" > SHA256SUMS.txt)
+          if gh release view "$RELEASE_TAG" --json isDraft > existing.json 2>/dev/null; then
+            test "$(jq -r .isDraft existing.json)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "子云影像工坊 $RELEASE_TAG · Windows / Mac" --notes-file ".github/release-$RELEASE_TAG.md"
+          fi
+          gh release upload "$RELEASE_TAG" assets/* --clobber
+          mkdir verify-download
+          gh release download "$RELEASE_TAG" -D verify-download
+          (cd verify-download && sha256sum --check --strict SHA256SUMS.txt)
+          gh release view "$RELEASE_TAG" --json assets > uploaded.json
+          for name in "${names[@]}" SHA256SUMS.txt; do
+            bytes=$(wc -c < "assets/$name")
+            digest=$(sha256sum "assets/$name" | cut -d' ' -f1)
+            jq -e --arg name "$name" --argjson bytes "$bytes" --arg digest "sha256:$digest" '.assets | any(.name==$name and .size==$bytes and .digest==$digest and .state=="uploaded")' uploaded.json
+          done
+          gh release edit "$RELEASE_TAG" --draft=false --latest

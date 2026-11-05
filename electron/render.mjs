@@ -7,7 +7,6 @@ import {normalizeTimeline,timelineDuration} from '../shared/timeline.mjs';
 export async function resolveFfmpeg(root, userData) {
  const binary=process.platform==='win32'?'ffmpeg.exe':'ffmpeg';
  const local=path.join(root,'runtime',binary);
- if(process.platform!=='darwin')return local;
  const configured=process.env.ZIYUN_FFMPEG_PATH;
  const candidates=[
   configured&&path.isAbsolute(configured)&&configured,
@@ -16,7 +15,7 @@ export async function resolveFfmpeg(root, userData) {
   '/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg',
  ];
  for(const candidate of candidates.filter(Boolean)){
-  try{await fs.access(candidate,constants.X_OK);return candidate}catch{}
+  try{await fs.access(candidate,process.platform==='win32'?constants.F_OK:constants.X_OK);return candidate}catch{}
  }
  return 'ffmpeg';
 }
@@ -135,10 +134,145 @@ async function renderTimeline(config,ffmpeg,{signal,onProgress}){
  await fs.writeFile(path.join(base,`${id}.json`),JSON.stringify({timeline},null,2),'utf8');
  return {localPath:output,subtitlePath,timeline,width,height,duration};
 }
+
+function audioCues(cues, text, duration) {
+ let subdivided=false;
+ const valid=(Array.isArray(cues)?cues:[]).filter(c=>typeof c.text==='string'&&c.text.trim()&&Number.isFinite(c.start)&&Number.isFinite(c.end)&&c.start>=0&&c.end>c.start&&c.start<duration).sort((a,b)=>a.start-b.start).flatMap(cue=>{
+  if(cue.text.length<=22)return [cue];
+  subdivided=true;
+  const parts=Array.from({length:Math.ceil(cue.text.length/22)},(_,index)=>cue.text.slice(index*22,(index+1)*22));
+  let at=cue.start;
+  return parts.map((part,index)=>{
+   const end=index===parts.length-1?cue.end:at+(cue.end-cue.start)*part.length/cue.text.length;
+   const result={text:part,start:at,end};at=end;return result;
+  });
+ });
+ if(!valid.length)return {cues:subtitleCues(text,duration),estimated:true};
+ const grouped=[];
+ let current;
+ for(const cue of valid){
+  const end=Math.min(duration,cue.end);
+  if(current&&(current.text.length+cue.text.length>22||cue.start-current.end>.6)){
+   grouped.push(current);current=null;
+  }
+  if(!current)current={text:'',start:cue.start,end};
+  current.text+=cue.text;current.end=end;
+  if(/[。！？!?；;，,]$/.test(current.text)){grouped.push(current);current=null;}
+ }
+ if(current)grouped.push(current);
+ let previous=0;
+ for(const cue of grouped){cue.start=Math.max(previous,cue.start);previous=cue.end;}
+ return {cues:grouped.filter(c=>c.end-c.start>=.001),estimated:subdivided};
+}
+
+async function plannedAudio(segment,config,context,ffmpeg,work,index){
+ let audioPath=segment.audioPath;
+ let cues=segment.audioCues||segment.cues;
+ if(!audioPath){
+  if(!context.providerRunner)throw new Error('请先生成配音或导入音频。');
+  const options={voice:config.voice||'alloy',...(config.voiceOptions||{})};
+  const result=await context.providerRunner('tts',{...options,prompt:segment.text});
+  audioPath=result.localPath;
+  cues=result.segments;
+  if(!audioPath){
+   audioPath=path.join(work,`planned_voice_${index}.${result.mime==='audio/wav'?'wav':'mp3'}`);
+   await fs.writeFile(audioPath,Buffer.from(result.bytes||[]));
+  }
+ }
+ const duration=await mediaDuration(ffmpeg,audioPath,context.signal);
+ if(duration>600)throw new Error('单段音频超过10分钟，请分段后再混剪。');
+ return {audioPath,duration,...audioCues(cues,segment.text,duration)};
+}
+
+export async function prepareMontageTimeline(config,context,ffmpeg){
+ const ratio=config.ratio||'9:16';
+ if(!['9:16','16:9','1:1'].includes(ratio))throw new Error('混剪输出比例暂支持9:16、16:9、1:1。');
+ const base=path.resolve(config.outputDir);
+ const id=String(config.jobId||randomUUID()).replace(/[^a-zA-Z0-9_-]/g,'_');
+ const work=path.join(base,`work_${id}`);
+ await fs.mkdir(work,{recursive:true});
+ const clips=[];
+ const prepared=[];
+ let offset=0,estimated=false;
+ if(config.openingPath&&config.openingAudioMode==='original'){
+  const duration=await mediaDuration(ffmpeg,config.openingPath,context.signal);
+  const info=await runMedia(ffmpeg,['-hide_banner','-i',config.openingPath],{signal:context.signal,allowFailure:true});
+  if(!/Stream .*Audio:/.test(info.stderr))throw new Error('所选片头没有原声音轨，请改用纯画面模式。');
+  clips.push({id:randomUUID(),track:'picture',start:0,duration,path:config.openingPath,sourceIn:0});
+  clips.push({id:randomUUID(),track:'voice',start:0,duration,path:config.openingPath,sourceIn:0,volume:1});
+  if(config.subtitle!==false&&config.openingText){
+   const opening=audioCues(config.openingCues,config.openingText,duration);estimated ||= opening.estimated;
+   for(const cue of opening.cues)clips.push({id:randomUUID(),track:'subtitle',start:cue.start,duration:cue.end-cue.start,text:cue.text});
+  }
+  offset=duration;
+ }
+ const bodyStart=offset;
+ let master;
+ if(config.masterAudioPath){
+  const duration=await mediaDuration(ffmpeg,config.masterAudioPath,context.signal);
+  master={duration,...audioCues(config.masterCues,config.masterText||config.segments.map(segment=>segment.text).join(''),duration)};
+  estimated ||= master.estimated;
+  clips.push({id:randomUUID(),track:'voice',start:bodyStart,duration,path:config.masterAudioPath,sourceIn:0,volume:1});
+ }
+ const declared=config.segments.reduce((total,segment)=>total+(Number(segment.duration)||0),0);
+ const declaredMaster=master&&config.segments.every(segment=>Number(segment.duration)>0)&&Math.abs(declared-master.duration)<.15;
+ const textLength=config.segments.reduce((total,segment)=>total+String(segment.text||'').length,0);
+ for(const [index,segment] of config.segments.entries()){
+  if(!segment.text?.trim())throw new Error(`第${index+1}段缺少文案。`);
+  const audio=master?{audioPath:config.masterAudioPath,duration:declaredMaster?Number(segment.duration):master.duration*segment.text.length/textLength,cues:[],estimated:!declaredMaster}:await plannedAudio(segment,config,context,ffmpeg,work,index);
+  if(master&&!declaredMaster)estimated=true;
+  if(!master){
+   estimated ||= audio.estimated;
+   clips.push({id:randomUUID(),track:'voice',start:offset,duration:audio.duration,path:audio.audioPath,sourceIn:0,volume:1});
+   if(config.subtitle!==false)for(const cue of audio.cues)clips.push({id:randomUUID(),track:'subtitle',start:offset+cue.start,duration:cue.end-cue.start,text:cue.text});
+  }
+  let shots=segment.shots?.length?segment.shots.map(shot=>({...shot})):Array.from(new Set(segment.paths||[])).map(file=>({path:file,sourceIn:0,duration:audio.duration/(new Set(segment.paths||[]).size)}));
+  if(!shots.length)throw new Error(`第${index+1}段没有已确认的镜头。`);
+  if(index===0&&config.openingPath&&config.openingAudioMode!=='original'){
+   const head=Math.min(audio.duration,await mediaDuration(ffmpeg,config.openingPath,context.signal));
+   shots=shots.filter(shot=>path.resolve(shot.path)!==path.resolve(config.openingPath));
+   const remaining=audio.duration-head;
+   if(remaining>.04&&!shots.length)throw new Error('片头短于正文配音，请补充后续素材。');
+   shots=[{path:config.openingPath,sourceIn:0,duration:head},...shots.map(shot=>({...shot,duration:remaining/shots.length}))].filter(shot=>shot.duration>.001);
+  }
+  const sum=shots.reduce((total,shot)=>total+Number(shot.duration),0);
+  if(!Number.isFinite(sum)||Math.abs(sum-audio.duration)>.15)throw new Error(`第${index+1}段镜头总时长与配音不一致，请重新匹配镜头。`);
+  shots[shots.length-1].duration+=audio.duration-sum;
+  let start=offset;
+  for(const shot of shots){
+   const sourceIn=Number(shot.sourceIn||0),duration=Number(shot.duration);
+   if(!Number.isFinite(sourceIn)||sourceIn<0||!Number.isFinite(duration)||duration<.001||!shot.path)throw new Error('镜头入点或时长无效。');
+   if(!IMAGE.test(shot.path)){
+    const native=await mediaDuration(ffmpeg,shot.path,context.signal);
+    if(sourceIn+duration>native+.08)throw new Error('镜头超出源视频可用时长，请补充素材或重新匹配。');
+   }
+   clips.push({id:randomUUID(),track:'picture',start,duration,path:shot.path,sourceIn});
+   start+=duration;
+  }
+  prepared.push({...segment,shots,duration:audio.duration,start:offset,audioPath:audio.audioPath});
+  offset+=audio.duration;
+ }
+ if(master&&config.subtitle!==false)for(const cue of master.cues)clips.push({id:randomUUID(),track:'subtitle',start:bodyStart+cue.start,duration:cue.end-cue.start,text:cue.text});
+ const timeline=normalizeTimeline({ratio,fontSize:ratio==='16:9'?24:30,clips});
+ return {timeline,prepared,duration:offset,estimated};
+}
+
+async function renderPlannedMontage(config,context,ffmpeg){
+ const {timeline,prepared,duration:offset,estimated}=await prepareMontageTimeline(config,context,ffmpeg);
+ const base=path.resolve(config.outputDir);
+ const id=String(config.jobId||randomUUID()).replace(/[^a-zA-Z0-9_-]/g,'_');
+ const result=await renderTimeline({...config,jobId:id,timeline},ffmpeg,context);
+ const actual=await mediaDuration(ffmpeg,result.localPath,context.signal);
+ if(Math.abs(actual-offset)>.25)throw new Error('成片时长与声音时间轴不一致，请检查镜头范围后重试。');
+ await fs.writeFile(path.join(base,`${id}.json`),JSON.stringify({name:config.name,duration:actual,segments:prepared,timeline:result.timeline},null,2),'utf8');
+ return {...result,duration:actual,...(estimated&&config.subtitle!==false?{warning:'部分字幕或正文分段采用估算时间，请在时间轴预览中复核。'}:{})};
+}
+
 export async function renderMontage(config,context={}){
  const ffmpeg=context.ffmpegPath||await resolveFfmpeg(process.cwd());const {signal}=context;
  if(config.timeline)return renderTimeline(config,ffmpeg,context);
  if(!config.segments?.length)throw new Error('请先填写文案段落并选择对应素材。');
+ if(config.masterAudioPath||config.openingAudioMode==='original'||config.segments.some(segment=>segment.shots?.length))return renderPlannedMontage(config,context,ffmpeg);
  if(!['9:16','16:9','1:1'].includes(config.ratio||'9:16'))throw new Error('混剪输出比例暂支持9:16、16:9、1:1。');
  const [width,height]=(config.ratio==='16:9'?[1920,1080]:config.ratio==='1:1'?[1080,1080]:[1080,1920]);
  const base=path.resolve(config.outputDir);await fs.mkdir(base,{recursive:true});const taskId=String(config.jobId||createHash('sha256').update(JSON.stringify(config)).digest('hex').slice(0,20)).replace(/[^a-zA-Z0-9_-]/g,'_');const work=path.join(base,`work_${taskId}`);await fs.mkdir(work,{recursive:true});
@@ -147,7 +281,7 @@ export async function renderMontage(config,context={}){
  for(let i=0;i<config.segments.length;i++){
   if(signal?.aborted)throw new Error('视频合成已停止。');
   const segment=config.segments[i];if(!segment.text?.trim())throw new Error(`第${i+1}段缺少文案。`);let audio=segment.audioPath,exactCues=null;
-  const hash=createHash('sha256').update(JSON.stringify({text:segment.text,voice:config.voice||'alloy',provider:context.provider?.id})).digest('hex');
+  const hash=createHash('sha256').update(JSON.stringify({text:segment.text,voice:config.voice||'alloy',voiceOptions:config.voiceOptions,provider:context.provider?.id,model:context.provider?.model})).digest('hex');
   if(!audio){
    const cached=checkpoint.audio[hash];if(cached&&await fs.stat(cached).then(s=>s.isFile()).catch(()=>false)){audio=cached;exactCues=checkpoint.cues[hash];}
    else{
@@ -155,10 +289,10 @@ export async function renderMontage(config,context={}){
     const chunks=String(segment.text).split(/(?<=[。！？!?；;])|\n/).map(s=>s.trim()).filter(Boolean).flatMap(s=>Array.from({length:Math.ceil(s.length/60)},(_,n)=>s.slice(n*60,(n+1)*60)));
     let at=0;const chunkFiles=[];exactCues=[];
     for(let n=0;n<chunks.length;n++){
-     const r=await context.providerRunner('tts',{prompt:chunks[n],voice:config.voice||'alloy'});let input=r.localPath;
+     const r=await context.providerRunner('tts',{voice:config.voice||'alloy',...(config.voiceOptions||{}),prompt:chunks[n]});let input=r.localPath;
      if(!input){input=path.join(work,`voice_${hash}_${n}.mp3`);await fs.writeFile(input,Buffer.from(r.bytes||[]));}
      const wav=`speech_${i}_${n}.wav`;await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-i',path.resolve(input),'-ar','48000','-ac','2','-c:a','pcm_s16le',wav],{cwd:work,signal});
-     const seconds=await mediaDuration(ffmpeg,path.join(work,wav),signal);exactCues.push(...subtitleCues(chunks[n],seconds,at));at+=seconds;chunkFiles.push(wav);
+     const seconds=await mediaDuration(ffmpeg,path.join(work,wav),signal);const timing=audioCues(r.segments,chunks[n],seconds);exactCues.push(...timing.cues.map(c=>({...c,start:c.start+at,end:c.end+at})));at+=seconds;chunkFiles.push(wav);
     }
     await fs.writeFile(path.join(work,`speech_${i}.txt`),chunkFiles.map(f=>`file '${f}'`).join('\n'));
     audio=path.join(work,`voice_${hash}.wav`);await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-f','concat','-safe','1','-i',`speech_${i}.txt`,'-c:a','pcm_s16le',audio],{cwd:work,signal});

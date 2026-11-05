@@ -1,7 +1,79 @@
 {
-  "name":"ziyun-image-studio","productName":"子云影像工坊","version":"0.1.9","private":true,"type":"module","description":"Windows 本地图片与视频批量生产工具","author":"Ziyun Studio","main":"electron/main.cjs",
-  "scripts":{"dev":"vite --host 127.0.0.1","build":"vite build","start":"electron .","test":"node --test tests/*.test.mjs","package:mac":"npm run build && electron-builder --mac dmg --publish never","package":"npm run build && electron-builder --win nsis --x64","smoke":"node scripts/smoke.mjs"},
-  "dependencies":{"@phosphor-icons/react":"^2.1.10","react":"19.3.1","react-dom":"19.3.1","sql.js":"^1.13.0"},
-  "devDependencies":{"@playwright/test":"^1.56.1","@vitejs/plugin-react":"^5.1.0","electron":"45.2.1","electron-builder":"26.18.0","vite":"8.3.5"},
-  "build":{"appId":"com.ziyun.imagestudio","productName":"子云影像工坊","artifactName":"ZiyunStudio-Setup-${version}.${ext}","directories":{"output":"release/0.1.9"},"files":["dist/**/*","electron/**/*","shared/**/*","package.json"],"asarUnpack":["**/sql-wasm.wasm"],"mac":{"target":"dmg","category":"public.app-category.video","artifactName":"ZiyunStudio-${version}-mac-${arch}.${ext}","identity":"-","hardenedRuntime":false,"notarize":false},"win":{"target":"nsis","signAndEditExecutable":false},"nsis":{"oneClick":false,"perMachine":false,"allowToChangeInstallationDirectory":true,"createDesktopShortcut":true,"shortcutName":"子云影像工坊","deleteAppDataOnUninstall":false},"extraResources":[{"from":"runtime/","to":"runtime","filter":["**/*"]}]}
+  "name": "ziyun-image-studio",
+  "productName": "子云影像工坊",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows 本地图片与视频批量生产工具",
+  "author": "Ziyun Studio",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "package:mac": "npm run build && electron-builder --mac dmg --publish never",
+    "package": "npm run build && electron-builder --win nsis --x64",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "exceljs": "4.4.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sql.js": "^1.13.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "vite": "8.3.5"
+  },
+  "build": {
+    "appId": "com.ziyun.imagestudio",
+    "productName": "子云影像工坊",
+    "artifactName": "ZiyunStudio-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release/0.4.0"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "shared/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/sql-wasm.wasm"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.video",
+      "artifactName": "ZiyunStudio-${version}-mac-${arch}.${ext}",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "子云影像工坊",
+      "deleteAppDataOnUninstall": false
+    },
+    "extraResources": [
+      {
+        "from": "runtime/",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  }
 }

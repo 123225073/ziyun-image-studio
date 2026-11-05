@@ -111,6 +111,17 @@ test('describe sends actual image bytes and excludes user requested changes',()=
   },'vision-test');
   assert.deepEqual(await runProvider('describe',{referencePaths:[image],prompt:'MODIFY_SECRET',userPrompt:'MODIFY_SECRET'},context),{text:'原图描述'});
 }));
+test('describe sends explicit Excel reverse instructions without mixing image-generation requests',()=>fixtures(async({image})=>{
+  const context=ctx('openai-chat',async(url,options)=>{
+    const body=JSON.parse(options.body),content=body.messages[0].content;
+    assert.match(content[1].text,/重点描述界面布局/);
+    assert.equal(content[2].image_url.url,`data:image/png;base64,${png.toString('base64')}`);
+    assert(!JSON.stringify(body).includes('GENERATION_ONLY'));
+    return response({choices:[{message:{content:'按关注点描述的原图'}}]});
+  },'vision-test');
+  await runProvider('describe',{referencePaths:[image],describeInstructions:'重点描述界面布局',userPrompt:'GENERATION_ONLY'},context);
+}));
+
 test('plan supports normal text and explicit JSON output without changing payload',async()=>{
   const payload={prompt:'做三种文案',json:true};
   const result=await runProvider('plan',payload,ctx('openai-chat',async(url,o)=>{assert.deepEqual(JSON.parse(o.body).response_format,{type:'json_object'});return response({choices:[{message:{content:'{"prompts":[]}'}}]});},'chat-model'));

@@ -22,7 +22,14 @@ try {
   })), { version: pkg.version, packaged: true });
   let page = await application.firstWindow({ timeout: 30000 });
   await page.getByTestId('add-row').click({ timeout: 30000 });
-  await page.waitForFunction(async () => (await window.studio.call('getState')).rows.length === 1, null, { timeout: 15000 });
+  const deadline = Date.now() + 15000;
+  let saved;
+  while (Date.now() < deadline) {
+    saved = await page.evaluate(() => window.studio.call('getState'));
+    if (saved.rows.length === 1) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(saved?.rows.length, 1);
   console.log('Saved a workspace row. Restarting application.');
   await application.close();
   application = await electron.launch({ executablePath, env, timeout: 60000 });

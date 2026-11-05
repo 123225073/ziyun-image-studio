@@ -1,0 +1,46 @@
+.image-row-toolbar .image-row-delete {
+  padding: 8px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.row-delete-intro,
+.row-delete-warning {
+  line-height: 1.7;
+}
+
+.row-delete-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faf8;
+}
+
+.row-delete-list li {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.row-delete-list strong {
+  color: var(--green);
+  min-width: 48px;
+  overflow-wrap: anywhere;
+}
+
+.row-delete-list span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-delete-warning {
+  color: #9a571f;
+  background: #fff6e9;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
