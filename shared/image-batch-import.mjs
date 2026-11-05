@@ -14,8 +14,8 @@ export const IMAGE_BATCH_COLUMNS = Object.freeze([
   {key:'ratio',title:'图片比例',width:15,defaultText:'跟随原图',help:'跟随原图、9:16、16:9、1:1、3:4、4:3。'},
   {key:'resolution',title:'分辨率',width:13,defaultText:'1K',help:'可选：1K、2K、4K。'},
   {key:'template',title:'项目规范',width:28,defaultText:'当前默认项目规范',help:'可填应用中现有规范的名称或 ID；填“不使用模板”表示不套用。'},
-  {key:'folderName',title:'保存子目录',width:30,defaultText:'按类型名称自动创建',help:'可选的输出子目录，不能填写绝对路径或 ..。序号和批次由应用添加。'},
-  {key:'outputLocation',title:'导出位置',width:22,defaultText:'系统输出目录',help:'留空或填写“系统输出目录”沿用底部输出根目录；填写“原目录子图”时，参考素材路径必须为单个类型目录，使用其中母图，结果写回该目录/子图。此模式无需填写保存子目录。'},
+  {key:'folderName',title:'保存子目录',width:30,defaultText:'按类型名称自动创建',help:'系统输出目录模式可填写相对子目录，不能填写绝对路径或 ..。原目录子图模式请留空，应用自动回填识别出的完整子图保存路径。'},
+  {key:'outputLocation',title:'导出位置',width:22,defaultText:'系统输出目录',help:'留空沿用底部输出根目录；填“原目录子图”时，参考素材路径填写单个类型目录：命名为母图/母图1/母图2的图片同时作为参考；没有母图命名时使用本层所有图片，最多16张，不读取子图。结果保存到类型目录/子图；路径自动回填本行保存子目录，导入后参考和保存位置可分别调整。'},
 ]);
 
 const text = value => String(value ?? '').trim();
@@ -62,5 +62,5 @@ export function normalizeImageBatchRow(raw,{existingRows=[],settings={}}={}) {
   if(!['系统输出目录','原目录子图'].includes(outputLocation))errors.push('导出位置应留空、填写“系统输出目录”或“原目录子图”。');
   if(outputLocation==='原目录子图'&&!sourceInput)errors.push('原目录子图模式需要填写单个类型目录的参考素材路径。');
   if(outputLocation==='原目录子图'&&folderName)errors.push('原目录子图模式固定保存到类型目录/子图，请清空保存子目录。');
-  return {values:{code,name,sourceMode:'single',sourcePaths:[],referencePrompt,userPrompt,count,ratio,resolution,templateId,folderName},sourceInput,outputLocation,autoDescribe,describeInstructions,defaultedFields,templateName:templates.find(item=>item.id===templateId)?.name||'不使用模板',errors,warnings};
+  return {values:{code,name,sourceMode:'single',referenceMode:'rotate',sourcePaths:[],referencePrompt,userPrompt,count,ratio,resolution,templateId,folderName},sourceInput,outputLocation,autoDescribe,describeInstructions,defaultedFields,templateName:templates.find(item=>item.id===templateId)?.name||'不使用模板',errors,warnings};
 }

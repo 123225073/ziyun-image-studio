@@ -77,7 +77,7 @@ export function providerPlatform(provider) {
 export function platformDraft(platform, id) {
   return {
     id, name: platform.label, protocol: platform.protocol, baseUrl: platform.baseUrl || '',
-    model: platform.models?.[0] || '', models: platform.models || [], resourceId: platform.resourceId || '',
+    model: '', models: platform.models || [], resourceId: platform.resourceId || '',
     timeoutMs: platform.timeoutMs || 180000, key: '', hasKey: false,
   };
 }

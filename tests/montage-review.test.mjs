@@ -154,6 +154,6 @@ test('制作草稿校验已采纳全文及素材，整篇改写不能复用旧�
   const checked = await service.reviewMontageCombinations({ setup: input, indices: [0] });
   const suggestion = await service.suggestMontageCombination({ setup: input, index: 0, sourceKey: checked.sourceKey, mode: 'rewrite' });
   const { accepted } = await service.acceptMontageSuggestion({ setup: input, index: 0, sourceKey: checked.sourceKey, proposalId: suggestion.proposal.id });
-  await assert.rejects(service.createMontageDraft({ ...accepted, reviewSourceKey: checked.sourceKey, reviewIndex: 0, masterAudioPath: 'old.mp3' }), /不能复用原旁白/);
-  await assert.rejects(service.createMontageDraft({ ...accepted, reviewSourceKey: checked.sourceKey, reviewIndex: 0, masterText: '其他全文' }), /已变化/);
+  await assert.rejects(service.createMontageDraft({ ...accepted, setup: input, reviewSourceKey: checked.sourceKey, reviewIndex: 0, masterAudioPath: 'old.mp3' }), /不能复用原旁白/);
+  await assert.rejects(service.createMontageDraft({ ...accepted, setup: input, reviewSourceKey: checked.sourceKey, reviewIndex: 0, masterText: '其他全文' }), /已变化/);
 });

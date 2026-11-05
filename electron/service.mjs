@@ -15,7 +15,8 @@ import { alignSections } from '../shared/montage-batch.mjs';
 import { nextImageRowCode } from '../shared/image-rows.mjs';
 import { imageBatchCodeKey } from '../shared/image-batch-import.mjs';
 import { validateImageFolderMapping } from './image-folder-import.mjs';
-import { reviewSource, reviewTextKey, montageReviewCombination, montageReviewRequest, montageSuggestionRequest, parseMontageReview, parseMontageSuggestion } from './montage-review.mjs';
+import { reviewSource, reviewTextKey, montageReviewCombination, montageReviewRequest, montageSuggestionRequest, parseMontageReview, parseMontageSuggestion, montageBindingReviewRequest, applyMontageBindingReview } from './montage-review.mjs';
+import { normalizeMontageBindings, montageBindingProblems, montageVisualFragments } from '../shared/montage-bindings.mjs';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
 const TERMINAL = new Set(['succeeded', 'failed', 'unknown', 'cancelled']);
@@ -215,14 +216,15 @@ function normalizedRow(row, previous) {
   return {
     id: previous?.id || row.id || uid(), code: String(row.code ?? previous?.code ?? ''), name: String(row.name ?? previous?.name ?? ''),
     sourceMode: row.sourceMode === 'folder' ? 'folder' : 'single', sourcePaths: Array.isArray(row.sourcePaths) ? [...new Set(row.sourcePaths.map(String))] : [],
+    referenceMode: (row.referenceMode ?? previous?.referenceMode) === 'all' ? 'all' : 'rotate',
     referencePrompt: String(row.referencePrompt ?? ''), userPrompt: String(row.userPrompt ?? ''),
     count: integer(row.count, 1, 500), ratio: String(row.ratio || 'source'), resolution: String(row.resolution || '1K'),
     templateId: String(row.templateId ?? previous?.templateId ?? ''), folderName: String(row.folderName || ''),
     imageBatch: previous?.imageBatch || null, imageBatchNumber: previous?.imageBatchNumber || 0,
     ...(previous?.batchImport ? { batchImport: clone(previous.batchImport) } : {}),
-    ...(previous?.outputMode === 'source-children' ? {
+    ...(!row.clearOutputMapping && previous?.outputMode === 'source-children' ? {
       outputMode: 'source-children', sourceRoot: previous.sourceRoot, sourceFolder: previous.sourceFolder, motherPath: previous.motherPath,
-      sourceMode: 'single', sourcePaths: [previous.motherPath],
+      motherPaths: previous.motherPaths || (previous.motherPath ? [previous.motherPath] : []), folderName: path.join(previous.sourceFolder, '子图'),
     } : {}),
     // Optional slot variations are always explicit user inputs. Planning never
     // replaces the source description or edits saved row text.
@@ -376,14 +378,16 @@ export class StudioService {
     this.state.settings = next; this.changed(); this.schedule(); return this.publicState().settings;
   }
 
-  async saveRow(row) {
-    return this.serializeSubmission(() => {
+  async saveRow(row, trustedOutputMapping) {
+    return this.serializeSubmission(async () => {
       this.assertOpen();
       const index = this.state.rows.findIndex(item => item.id === row.id);
-      const previousMapping = this.state.rows[index];
-      if (previousMapping?.outputMode === 'source-children' && ((row.sourceMode != null && row.sourceMode !== 'single') || (row.sourcePaths != null && JSON.stringify(row.sourcePaths) !== JSON.stringify([previousMapping.motherPath])))) throw new Error('母图目录任务的参考来源已绑定，请整理原目录后重新导入；其他参数可以正常修改。');
       if (index < 0 && !String(row.code || '').trim()) row = { ...row, code: nextImageRowCode(this.state.rows) };
       const saved = normalizedRow(index < 0 && row.templateId == null ? {...row, templateId:this.state.settings.defaultTemplateId} : row, this.state.rows[index]);
+      if (trustedOutputMapping) {
+        Object.assign(saved, { outputMode: 'source-children', sourceRoot: trustedOutputMapping.sourceRoot, sourceFolder: trustedOutputMapping.sourceFolder, folderName: trustedOutputMapping.outputPath });
+        await validateImageFolderMapping(saved);
+      }
       const previous = this.state.rows[index];
       if (previous && saved.count < previous.count && this.currentImages(saved.id).some(job => job.slot >= saved.count)) {
         throw new Error('现有占位超出新数量。请先删除超出的失败占位，或归档当前批次。');
@@ -416,7 +420,7 @@ export class StudioService {
         const row = normalizedRow({ ...entry.values, id: uid() });
         if (!row.code || codes.has(imageBatchCodeKey(row.code))) throw new Error(`编号 ${row.code || '（空）'} 已存在，请重新预览。`);
         codes.add(imageBatchCodeKey(row.code));
-        Object.assign(row, { outputMode: 'source-children', sourceRoot: entry.sourceRoot, sourceFolder: entry.folderPath, motherPath: entry.motherPath });
+        Object.assign(row, { outputMode: 'source-children', sourceRoot: entry.sourceRoot, sourceFolder: entry.folderPath, motherPath: entry.motherPath, motherPaths: entry.motherPaths || [entry.motherPath], folderName: path.join(entry.folderPath, '子图') });
         await validateImageFolderMapping(row);
         if (folders.has(folderKey(row.sourceFolder))) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
         folders.add(folderKey(row.sourceFolder)); imported.push(row);
@@ -451,7 +455,7 @@ export class StudioService {
           const row = normalizedRow({ ...values, id: uid(), code });
           if (entry.outputMapping) {
             const mapping = entry.outputMapping;
-            Object.assign(row, { outputMode: 'source-children', sourceRoot: mapping.sourceRoot, sourceFolder: mapping.sourceFolder, motherPath: mapping.motherPath });
+            Object.assign(row, { outputMode: 'source-children', sourceRoot: mapping.sourceRoot, sourceFolder: mapping.sourceFolder, motherPath: mapping.motherPath, motherPaths: mapping.motherPaths || [mapping.motherPath], folderName: path.join(mapping.sourceFolder, '子图') });
             await validateImageFolderMapping(row);
             const key = process.platform === 'win32' ? path.resolve(row.sourceFolder).toLowerCase() : path.resolve(row.sourceFolder);
             if (folders.has(key)) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
@@ -571,13 +575,144 @@ export class StudioService {
     }
     const sourcePaths = [...new Set(files)];
     if (!sourcePaths.length) throw new Error('拖入的文件夹没有支持的图片。');
-    return { sourcePaths, sourceMode: folder || sourcePaths.length > 1 ? 'folder' : 'single' };
+    return { sourcePaths, sourceMode: folder ? 'folder' : 'single' };
   }
 
   async saveMontageSetup(setup) {
     this.assertOpen();
     if (!setup || !Array.isArray(setup.sections) || setup.sections.length > 50 || JSON.stringify(setup).length > 500000) throw new Error('混剪配置无效。');
     this.state.montageSetup = clone(setup); this.changed(); return clone(setup);
+  }
+
+  // Called only after the main process native directory picker grants the root.
+  async scanMontageBindingFolders(rootPath) {
+    this.assertOpen();
+    if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) throw new Error('请选择素材总目录。');
+    const stat = await fsp.lstat(rootPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('素材总目录必须是实际文件夹。');
+    const root = await fsp.realpath(rootPath), folders = []; let mediaCount = 0;
+    const visit = async folder => {
+      const entries = await fsp.readdir(folder, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
+      const paths = entries.filter(entry => entry.isFile() && /\.(png|jpe?g|webp|bmp)$/i.test(entry.name)).map(entry => path.join(folder, entry.name));
+      mediaCount += paths.length;
+      folders.push({ path: folder, label: path.relative(root, folder) || path.basename(root), paths, mediaCount: paths.length });
+      for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink()) await visit(path.join(folder, entry.name));
+    };
+    await visit(root); this.assertOpen();
+    const library = { rootPath: root, folders, mediaCount };
+    this.state.montageBindingLibrary = library; this.changed(); return clone(library);
+  }
+
+  async montageBindingFoldersFor(combo) {
+    const bindings = combo.segments.flatMap(segment => normalizeMontageBindings(segment.text, segment.bindings || []));
+    if (!bindings.length) return [];
+    const library = this.state.montageBindingLibrary;
+    if (!library?.rootPath) throw new Error('请先选择并扫描素材总目录，再绑定文字范围。');
+    const root = library.rootPath, result = [];
+    if ((await fsp.lstat(root)).isSymbolicLink() || await fsp.realpath(root) !== root) throw new Error('素材总目录已移动或被链接替换，请重新选择。');
+    for (const folderPath of new Set(bindings.map(binding => binding.folderPath))) {
+      const saved = library.folders.find(folder => folder.path === folderPath);
+      if (!saved) throw new Error('文字绑定的目录不在已选择的素材总目录中，请重新选择目录。');
+      const relative = path.relative(root, folderPath);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('文字绑定不能指向素材总目录外。');
+      let current = root;
+      for (const part of relative.split(path.sep).filter(Boolean)) {
+        current = path.join(current, part);
+        const stat = await fsp.lstat(current);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || await fsp.realpath(current) !== current) throw new Error('绑定目录已移动或成为链接，请重新选择。');
+      }
+      const entries = await fsp.readdir(folderPath, { withFileTypes: true });
+      const paths = entries.filter(entry => entry.isFile() && /\.(png|jpe?g|webp|bmp)$/i.test(entry.name)).map(entry => path.join(folderPath, entry.name)).sort();
+      if (!paths.length) throw new Error('绑定目录没有可用图片，请重新扫描素材总目录。');
+      const verified = bindings.filter(binding => binding.folderPath === folderPath && binding.materialEvidence);
+      if (verified.length) {
+        const fingerprints = new Map();
+        for (const file of paths) fingerprints.set(file, await this.montageImageFingerprint(file));
+        for (const binding of verified) {
+          const files = binding.materialEvidence.files;
+          if (files.length !== paths.length || files.some(file => fingerprints.get(file.path) !== file.fingerprint)) throw new Error('改写后已复核的图片内容或目录文件已变化，请在“检查素材对应”中重新绑定当前图片。');
+        }
+      }
+      result.push({ ...saved, paths, mediaCount: paths.length });
+    }
+    return result;
+  }
+
+  async montageImageFingerprint(file) {
+    const digest = createHash('sha256');
+    for await (const chunk of fs.createReadStream(file)) digest.update(chunk);
+    return digest.digest('hex');
+  }
+
+  async montageBindingEvidenceFor(original, proposal) {
+    const affected = original.segments.filter((segment, index) => segment.text !== proposal.segments[index].text && segment.bindings?.length);
+    const folders = await this.montageBindingFoldersFor({ segments: affected });
+    const evidence = [];
+    const visionId = this.state.settings.bindings.montageVision;
+    for (const folder of folders) {
+      const item = { folderPath: folder.path, folderLabel: folder.label, evidenceComplete: false, images: [], files: [], reason: '' };
+      evidence.push(item);
+      try {
+        // Only affected directories enter the scanner. It checks file hashes and
+        // reuses visual/manual descriptions when the actual bytes are unchanged.
+        const { assets } = await this.scanMontageLibrary({ folder: folder.path, assetPaths: folder.paths, analyze: Boolean(visionId), ...(visionId ? { providerId: visionId } : {}) });
+        for (const file of folder.paths) {
+          const fingerprint = await this.montageImageFingerprint(file);
+          const asset = assets.find(asset => asset.path === file && asset.fingerprint === fingerprint) || assets.find(asset => asset.fingerprint === fingerprint);
+          const shots = asset?.shots || [];
+          item.files.push({ path: file, fingerprint });
+          if (asset?.kind !== 'image' || !shots.length || shots.some(shot => !['visual', 'manual'].includes(shot.analysis) || !String(shot.description || '').trim())) continue;
+          item.images.push({ fingerprint, description: shots.map(shot => shot.description).join('；').slice(0, 1200), tags: [...new Set(shots.flatMap(shot => shot.tags || []))].slice(0, 20), source: shots.every(shot => shot.analysis === 'manual') ? 'manual' : 'visual' });
+        }
+        item.evidenceComplete = item.images.length === folder.paths.length;
+        if (!item.evidenceComplete) item.reason = visionId
+          ? '部分实际图片未能识别，无法确认目录中每张随机图片都适配改写文案。请重新识别或手工处理绑定。'
+          : '没有覆盖该目录全部图片的有效内容描述，且未配置混剪视觉模型。请绑定视觉模型后重试，或在“检查素材对应”中手工确认。';
+      } catch (error) { item.reason = `实际图片内容复核未完成：${redact(error.message || '请重新识别或手工处理绑定。')}`; }
+    }
+    return evidence;
+  }
+
+  async checkMontageBindingEvidence(original, proposal, evidence, provider, record) {
+    const result = clone(proposal), tasks = [];
+    for (const [segmentIndex, segment] of original.segments.entries()) {
+      if (segment.text === proposal.segments[segmentIndex].text) continue;
+      for (const binding of segment.bindings || []) {
+        const basis = evidence.find(item => item.folderPath === binding.folderPath);
+        const proposed = result.segments[segmentIndex].bindings.find(item => item.id === binding.id);
+        if (!basis?.evidenceComplete) { proposed.reason = basis?.reason || '缺少实际图片内容依据，请手工处理绑定。'; continue; }
+        // Page by request size, never by a business limit on folder size. Each
+        // random candidate image must be covered by a successful semantic page.
+        const pages = []; let images = [], files = [], size = 0;
+        for (const [index, image] of basis.images.entries()) {
+          const length = JSON.stringify(image).length;
+          if (images.length && size + length > 8000) { pages.push({ images, files }); images = []; files = []; size = 0; }
+          images.push(image); files.push(basis.files[index]); size += length;
+        }
+        if (images.length) pages.push({ images, files });
+        tasks.push({ segmentIndex, segment, binding, basis, proposed, pages });
+      }
+    }
+    let completed = 0; const total = tasks.reduce((count, task) => count + task.pages.length, 0);
+    for (const task of tasks) {
+      let first = null, issue = '';
+      for (const [pageIndex, page] of task.pages.entries()) {
+        record.bindingReviewProgress = { stage: 'semantic', current: ++completed, total, folder: task.basis.folderPath }; this.changed();
+        const source = { segments: [{ ...task.segment, bindings: [task.binding] }] };
+        const target = { ...proposal, segments: [{ ...proposal.segments[task.segmentIndex], bindings: [task.proposed] }] };
+        const pageEvidence = [{ ...task.basis, ...page, page: pageIndex + 1, pages: task.pages.length, totalImageCount: task.basis.images.length }];
+        const checked = await this.callProvider('rewrite', montageBindingReviewRequest(source, target, pageEvidence), { provider });
+        const mapped = applyMontageBindingReview(checked?.text, source, target, pageEvidence).segments[0].bindings[0];
+        if (mapped.status !== 'ready') { issue = mapped.reason; break; }
+        if (first && (first.start !== mapped.start || first.end !== mapped.end || first.quote !== mapped.quote)) { issue = '不同图片批次对文字范围的定位不一致，请重新选择文字并确认素材。'; break; }
+        first ||= mapped;
+      }
+      if (issue) Object.assign(task.proposed, { status: 'needs-review', reason: issue });
+      else if (first) Object.assign(task.proposed, first, { materialEvidence: { files: task.basis.files, checkedAt: now() } });
+    }
+    for (const segment of result.segments) if (segment.bindings?.length) segment.bindings = normalizeMontageBindings(segment.text, segment.bindings, { allowPending: true });
+    return result;
   }
 
   montageReviewSession(setup, expectedKey) {
@@ -610,9 +745,12 @@ export class StudioService {
       if (this.reviewTasks.has(lock)) throw new Error('此组合正在校对或生成建议，请等待当前操作完成。');
       const record = session.items[index] ||= { index, status: 'unchecked', issues: [] };
       const combo = record.accepted || montageReviewCombination(snapshot, index);
+      // Pending rewrite bindings can be reviewed as text, but never generated.
+      if (!montageBindingProblems(combo).length) await this.montageBindingFoldersFor(combo);
       const textKey = reviewTextKey(combo);
       if (!force && ['pass', 'issue'].includes(record.status) && record.checkedTextKey === textKey && record.providerId === provider.id && record.model === provider.model) { items.push(clone(record)); continue; }
       const payload = montageReviewRequest(combo);
+      if (this.reviewTasks.has(lock)) throw new Error('此组合正在校对或生成建议，请等待当前操作完成。');
       this.reviewTasks.add(lock);
       Object.assign(record, { status: 'checking', error: '', updatedAt: now() });
       try {
@@ -648,14 +786,25 @@ export class StudioService {
     try {
       this.changed();
       const output = await this.callProvider('rewrite', payload, { provider });
-      const proposal = parseMontageSuggestion(output?.text, snapshot, combo, mode);
+      let proposal = parseMontageSuggestion(output?.text, snapshot, combo, mode);
+      const hasChangedBindings = mode === 'rewrite' && combo.segments.some((segment, index) => segment.text !== proposal.segments[index].text && segment.bindings?.length);
+      if (hasChangedBindings) {
+        try {
+          const evidence = await this.montageBindingEvidenceFor(combo, proposal);
+          proposal = await this.checkMontageBindingEvidence(combo, proposal, evidence, provider, record);
+          const incomplete = evidence.filter(item => !item.evidenceComplete);
+          if (incomplete.length) proposal.bindingWarning = [...new Set(incomplete.map(item => item.reason))].join('；');
+        } catch (error) {
+          proposal.bindingWarning = `改写后的素材绑定复核未完成：${redact(error.message || '请手工确认。')}`;
+        }
+      }
       this.assertOpen();
       record.proposal = proposal; record.updatedAt = now(); session.updatedAt = now();
       return { sourceKey, index, proposal: clone(proposal) };
     } catch (error) {
       record.suggestionError = redact(error.message || '建议生成失败。');
       throw new Error(record.suggestionError);
-    } finally { record.suggesting = false; this.reviewTasks.delete(lock); this.changed(); }
+    } finally { record.suggesting = false; delete record.bindingReviewProgress; this.reviewTasks.delete(lock); this.changed(); }
   }
 
   async acceptMontageSuggestion({ setup, index, sourceKey, proposalId } = {}) {
@@ -670,6 +819,38 @@ export class StudioService {
     record.accepted = { segments: clone(segments), masterText, mode, reason, proposalId: id, acceptedAt: now() };
     record.proposal = null; record.status = 'unchecked'; record.issues = []; record.error = ''; record.summary = '已采纳调整，待重新校验'; record.updatedAt = now(); session.updatedAt = now();
     this.changed(); return { sourceKey, index, accepted: clone(record.accepted) };
+  }
+
+  async resolveMontageBindings({ setup, index, sourceKey, bindingsBySegment } = {}) {
+    this.assertOpen();
+    if (!sourceKey) throw new Error('请先校对组合，再处理素材绑定。');
+    const session = this.montageReviewSession(setup, sourceKey), record = session.items[index];
+    if (!record || this.reviewTasks.has(`${sourceKey}:${index}`)) throw new Error('请等待本条校对或建议完成。');
+    const current = record.accepted || montageReviewCombination(setup, index);
+    if (!Array.isArray(bindingsBySegment) || bindingsBySegment.length !== current.segments.length) throw new Error('文字绑定段落数量不正确。');
+    const segments = current.segments.map((segment, i) => ({ ...clone(segment), bindings: normalizeMontageBindings(segment.text, bindingsBySegment[i]) }));
+    const accepted = { ...clone(current), segments, acceptedAt: now() };
+    await this.montageBindingFoldersFor(accepted);
+    if (this.reviewTasks.has(`${sourceKey}:${index}`) || reviewTextKey(record.accepted || montageReviewCombination(setup, index)) !== reviewTextKey(current)) throw new Error('当前文案或校对状态已变化，请重新打开素材绑定。');
+    if (reviewTextKey(accepted) !== reviewTextKey(current)) {
+      record.accepted = accepted; record.proposal = null; record.status = 'unchecked'; record.issues = []; record.summary = '素材对应已更新，请重新校对完整文案。'; record.updatedAt = now(); session.updatedAt = now(); this.changed();
+    }
+    return { sourceKey, index, accepted: clone(record.accepted || current) };
+  }
+
+  requireMontageReview(input) {
+    if (!input?.setup || !input.reviewSourceKey || !Number.isSafeInteger(input.reviewIndex)) throw new Error('请先对完整组合进行 AI 校对，通过后再生成配音与草稿。');
+    const source = reviewSource(input.setup);
+    const session = this.state.montageReviews.find(item => item.sourceKey === input.reviewSourceKey && item.signature === source.signature);
+    if (!session || source.sourceKey !== input.reviewSourceKey) throw new Error('文案或素材绑定已变化，请重新校对。');
+    const record = session.items[input.reviewIndex];
+    const combo = record?.accepted || montageReviewCombination(input.setup, input.reviewIndex);
+    if (!Array.isArray(input.segments) || reviewTextKey(input) !== reviewTextKey(combo) || (input.masterText != null && input.masterText !== combo.masterText)) throw new Error('校对后的文案或素材绑定已变化，请重新打开当前组合并校对。');
+    if (input.setup.mode === 'master' && input.setup.masterText.trim() !== combo.masterText && input.masterAudioPath) throw new Error('采纳改写后不能复用原旁白音频，请为新文案重新配音。');
+    if (record?.status !== 'pass' || record.checkedTextKey !== reviewTextKey(combo) || this.reviewTasks.has(`${source.sourceKey}:${input.reviewIndex}`)) throw new Error('本组合尚未通过 AI 校对，请先处理问题并重新校对。');
+    const problems = montageBindingProblems(combo);
+    if (problems.length) throw new Error(problems.map(problem => `${problem.section} 段：${problem.message}`).join('；'));
+    return clone(combo);
   }
 
   currentImages(rowId) {
@@ -781,6 +962,7 @@ export class StudioService {
           else pool.push(await checkImage(source));
         }
         pool = [...new Set(pool)];
+        if (row.referenceMode === 'all' && pool.length > 16) throw new Error('一起作为参考的图片最多 16 张，请减少参考图片或改为轮流使用。');
         if (row.sourceMode === 'folder' && !pool.length) throw new Error(`「${row.name || row.code || '未命名行'}」的文件夹没有可用图片。`);
         const template = row.templateId ? this.state.settings.templates.find(item => item.id === row.templateId) : null;
         if (row.templateId && !template) throw new Error('所选项目规范不存在，请重新选择。');
@@ -826,7 +1008,7 @@ export class StudioService {
           // A normal Generate click fills slots. Explicit retry/regenerate is
           // required to produce another billable attempt in an occupied slot.
           if (existing.length) continue;
-          const referencePaths = pool.length ? [pool[slot % pool.length]] : [];
+          const referencePaths = row.referenceMode === 'all' ? [...pool] : pool.length ? [pool[slot % pool.length]] : [];
           const explicit = row.variations?.[slot]?.trim();
           const lock = explicit ? '锁定规则：差异只可作用于用户或所选规范明确授权的字段。所有其他原图内容、主体身份、界面、布局及用户禁止/固定项保持不变；计划不得覆盖原稿、用户要求和规范。' : '';
           const prompt = [row.referencePrompt.trim(), row.userPrompt.trim(), template?.text.trim(), explicit, lock].filter(Boolean).join('\n\n');
@@ -1060,18 +1242,43 @@ export class StudioService {
   async planMontage(input = {}) {
     this.assertOpen();
     const config = clone(input);
-    if (!Array.isArray(config.segments) || !config.segments.length) throw new Error('请填写要匹配的文案。');
+    const reviewed = this.requireMontageReview(input);
+    config.segments = reviewed.segments; config.masterText = reviewed.masterText;
+    const folders = await this.montageBindingFoldersFor(reviewed);
+    config.fullNarration = true;
+    if (folders.length) {
+      config.reviewedSegments = clone(reviewed.segments);
+      config.segments = montageVisualFragments(reviewed.segments, folders);
+      // Resolve one random image for each exact bound range before scanning.
+      // The complete list remains in the library; no outside image may enter it.
+      const seed = randomUUID();
+      for (const segment of config.segments) if (segment.selectionMode === 'folder-random') {
+        const choice = createHash('sha256').update(`${seed}:${segment.sourceSection}:${segment.bindingId}`).digest().readUInt32BE(0) % segment.paths.length;
+        segment.paths = [segment.paths[choice]];
+      }
+    }
+    const refreshedBoundPaths = new Set();
     for (const [index, segment] of config.segments.entries()) {
       segment.section = String(segment.section || index + 1);
       if (!String(segment.text || '').trim()) throw new Error('请填写每段混剪文案。');
       const oldPaths = (segment.assetIds || []).filter(id => !this.state.montageAssets.some(asset => asset.id === id)).map(id => this.state.assets.find(asset => asset.id === id)?.path).filter(Boolean);
       segment.paths = [...new Set([...(segment.paths || []), ...oldPaths])];
       for (const file of segment.paths) {
-        if (this.state.montageAssets.some(asset => asset.path === file)) continue;
+        if (this.state.montageAssets.some(asset => asset.path === file) && (segment.selectionMode !== 'folder-random' || refreshedBoundPaths.has(file))) continue;
         if (!this.montageScanner) throw new Error('素材索引不可用，请重新导入素材。');
         const scanned = await this.montageScanner(path.dirname(file), { assetPaths: [file], previousAssets: clone(this.state.montageAssets) });
-        for (const asset of scanned) {
-          const existing = this.state.montageAssets.findIndex(item => item.id === asset.id);
+        if (segment.selectionMode === 'folder-random') {
+          refreshedBoundPaths.add(file);
+          if (!scanned.some(asset => asset.path === file && asset.kind === 'image' && asset.shots?.length)) throw new Error('文字绑定目录中的图片无法解码，请更换图片或重新扫描。');
+        }
+        for (let asset of scanned) {
+          const existing = this.state.montageAssets.findIndex(item => item.path === asset.path);
+          if (this.state.montageAssets.some(item => item.id === asset.id && item.path !== asset.path)) {
+            // Identical bytes may legitimately live in different bound folders.
+            // Keep both paths instead of letting hash dedup replace the first.
+            const suffix = createHash('sha256').update(asset.path).digest('hex').slice(0, 12);
+            asset = { ...asset, id: `${asset.id}-${suffix}`, shots: (asset.shots || []).map(shot => ({ ...shot, id: `${shot.id}-${suffix}` })) };
+          }
           if (existing >= 0) this.state.montageAssets[existing] = asset;
           else this.state.montageAssets.push(asset);
         }
@@ -1079,9 +1286,13 @@ export class StudioService {
     }
     const selectedAssets = Array.isArray(config.assetIds) ? this.state.montageAssets.filter(asset => config.assetIds.includes(asset.id) || config.segments.some(segment => segment.paths.includes(asset.path))) : this.state.montageAssets;
     if (!selectedAssets.length) throw new Error('请先选择混剪素材，再生成配音与剪辑方案。');
+    for (const segment of config.segments) if (segment.selectionMode === 'folder-random' && !selectedAssets.some(asset => segment.paths.includes(asset.path) && asset.kind === 'image' && asset.shots?.length)) throw new Error('文字绑定目录中的图片无法解码，请更换图片或重新扫描。');
     this.changed();
+    // Scanning can take time; do not start a paid recording if a concurrent
+    // recheck invalidated its approval while we were resolving local files.
+    this.requireMontageReview(input);
     if (config.fullNarration && !config.masterAudioPath) {
-      config.masterText = config.segments.map(segment => segment.text.trim()).join('\n');
+      config.masterText = reviewed.masterText;
       const speech = this.speechConfiguration(config);
       const audio = await this.speechAudio(config.masterText, speech.provider, speech.options);
       config.masterAudioPath = audio.localPath; config.masterCues = audio.segments;
@@ -1110,7 +1321,8 @@ export class StudioService {
     }
     config.seed = Number(config.variant ?? config.seed ?? 0);
     if (config.analyzeAssets) {
-      const pending = selectedAssets.filter(asset => asset.shots?.some(shot => !['visual', 'manual'].includes(shot.analysis))).map(asset => asset.id);
+      const boundOnly = new Set(config.segments.filter(segment => segment.selectionMode === 'folder-random').flatMap(segment => segment.paths));
+      const pending = selectedAssets.filter(asset => !boundOnly.has(asset.path) && asset.shots?.some(shot => !['visual', 'manual'].includes(shot.analysis))).map(asset => asset.id);
       if (pending.length) {
         const result = await this.scanMontageLibrary({ assetIds: pending, analyze: true });
         for (const asset of result.assets) { const index = selectedAssets.findIndex(item => item.id === asset.id); if (index >= 0) selectedAssets[index] = asset; }
@@ -1121,31 +1333,32 @@ export class StudioService {
     if (matching.matches) config.semanticMatches = matching.matches;
     const plan = buildMontagePlan(config, { assets: selectedAssets });
     plan.warnings.push(...matching.warnings);
+    // The source pool already lives in its review session and project setup;
+    // don't duplicate every candidate in every generated draft.
+    delete config.setup;
+    delete config.requestKey;
     return { ...config, ...plan };
   }
 
   async createMontageDraft(input) {
     this.assertOpen();
-    if (input.reviewSourceKey) {
-      const session = this.state.montageReviews.find(item => item.sourceKey === input.reviewSourceKey);
-      const accepted = session?.items?.[input.reviewIndex]?.accepted;
-      if (!accepted || !Array.isArray(input.segments) || reviewTextKey(input) !== reviewTextKey(accepted) || input.masterText !== accepted.masterText) throw new Error('采纳后的文案或素材已变化，请重新打开当前组合。');
-      const source = JSON.parse(session.signature);
-      if (source.mode === 'master' && source.masterText !== accepted.masterText && input.masterAudioPath) throw new Error('采纳改写后不能复用原旁白音频，请为新文案重新配音。');
-    }
+    this.requireMontageReview(input);
     // Reopening or retrying a completed combination must retain manual edits.
-    const key = String(input.requestKey || '');
-    const existing = key && this.state.montageDrafts.find(draft => draft.requestKey === key);
+    const requestedKey = String(input.requestKey || '');
+    const key = requestedKey ? createHash('sha256').update(requestedKey).digest('hex') : '';
+    const existing = key && this.state.montageDrafts.find(draft => draft.requestKey === key || draft.requestKey === requestedKey);
     if (existing) return clone(existing);
     if (this.preparingDraft) throw new Error('正在准备另一条混剪，请等待完成。');
     if (!this.prepareTimeline) throw new Error('时间线准备器不可用。');
     this.preparingDraft = true;
     try {
       const plan = await this.planMontage(input);
+      this.requireMontageReview(input);
       if (plan.missing?.length) throw new Error(plan.missing.map(item => `${item.section} 段：${item.reason}`).join('；'));
       const id = uid();
       const prepared = await this.prepareTimeline({ ...plan, outputDir: path.join(this.dataDir, 'montage-work'), jobId: id });
       this.assertOpen();
+      this.requireMontageReview(input);
       const warnings = [...new Set([...(plan.warnings || []), ...((plan.timingEstimated || prepared.estimated) ? ['部分字幕或段落边界按字数估算，请在时间线试听调整。'] : [])])];
       const record = { id, requestKey: key, name: input.name || '混剪草稿', timeline: normalizeTimeline(prepared.timeline), config: plan, warnings, createdAt: now() };
       this.state.montageDrafts.push(record); this.changed(); return clone(record);
@@ -1160,7 +1373,8 @@ export class StudioService {
     })));
     if (!candidates.length) return { warnings: ['素材尚未识别或维护描述，本次只按目录、文件名或手选素材制作待确认方案。'] };
     if (candidates.length > 300) return { warnings: ['本次候选镜头超过300个，已按标签匹配。请缩小素材范围后进行AI语义匹配。'] };
-    const units = config.segments.flatMap(segment => montageUtterances(segment, segment.duration).map(unit => ({ section: segment.section, text: unit.text })));
+    const units = config.segments.filter(segment => segment.selectionMode !== 'folder-random').flatMap(segment => montageUtterances(segment, segment.duration).map(unit => ({ section: segment.section, text: unit.text })));
+    if (!units.length) return { warnings: [] };
     const provider = this.provider('montageVision', providerId);
     const cacheKey = createHash('sha256').update(JSON.stringify({ provider, units, candidates })).digest('hex');
     const cached = this.state.montageMatchCache[cacheKey];
@@ -1194,6 +1408,8 @@ export class StudioService {
     this.assertOpen();
     if (!this.renderRunner) throw new Error('本机视频合成器尚未就绪。');
     if (!Array.isArray(config.segments) || !config.segments.length) throw new Error('请先添加至少一个混剪片段。');
+    if (config.segments.some(segment => segment.text?.trim())) this.requireMontageReview(config);
+    if (config.segments.some(segment => segment.bindings?.length)) throw new Error('文字绑定组合请先生成已校对的时间线草稿，再导出视频。');
     let provider = null;
     let voiceOptions = config.voiceOptions;
     if (!config.masterAudioPath && config.segments.some(segment => !segment.audioPath && segment.text?.trim())) {

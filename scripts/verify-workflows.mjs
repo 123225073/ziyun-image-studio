@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { runMedia, mediaDuration } from '../electron/render.mjs';
+import { runMedia, mediaDuration, resolveFfmpeg } from '../electron/render.mjs';
 
 const require=createRequire(import.meta.url);
 const root=path.resolve('.');
@@ -12,7 +12,7 @@ const {version}=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf
 const out=path.join(root,'test-output',`workflow-${version}`);
 await fs.mkdir(out,{recursive:true});
 const data=await fs.mkdtemp(path.join(out,'isolated-'));
-const ffmpeg=path.join(root,'runtime','ffmpeg.exe');
+const ffmpeg=await resolveFfmpeg(root);
 const image=path.join(out,'picture.png'), voice=path.join(out,'voice.wav'), music=path.join(out,'music.wav');
 await runMedia(ffmpeg,['-loglevel','error','-y','-f','lavfi','-i','color=c=0x20675e:s=1152x1536','-frames:v','1',image]);
 for(const [file,hz] of [[voice,440],[music,660]])await runMedia(ffmpeg,['-loglevel','error','-y','-f','lavfi','-i',`sine=frequency=${hz}:duration=1.5`,file]);
@@ -27,7 +27,7 @@ const server=createServer(async(req,res)=>{
  requests.push({path:req.url,method:req.method,authenticated:req.headers.authorization==='Bearer fake-local-key',size:/name="size"\r\n\r\n(\d+x\d+)/.exec(body)?.[1]});
  res.setHeader('content-type','application/json');
  if(req.url==='/v1/models')return res.end(JSON.stringify({data:[{id:'gpt-image-2.5'}]}));
- if(req.url==='/v1/chat/completions')return res.end(JSON.stringify({choices:[{message:{content:''}}]}));
+ if(req.url==='/v1/chat/completions')return res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'pass',summary:'本地测试校对通过',issues:[]})}}]}));
  if(req.url==='/v1/images/edits'&&requests.at(-1).size==='1152x1536'){
   if(staggered&&++staggeredRequests===2)await finishSecond.promise;
   return res.end(JSON.stringify({data:[{b64_json:fixture}]}));
@@ -70,7 +70,7 @@ try{
  await button('全局设置').click();
  await page.getByRole('tab',{name:/图片生成/}).click();
  await button('添加图片生成服务').click();
- await page.getByText('高级设置 · 名称、服务地址与等待时间',{exact:true}).click();
+ await page.getByText('高级设置 · 服务地址与等待时间',{exact:true}).click();
  await page.getByLabel('连接名称',{exact:true}).fill('本地验收连接');
  await page.getByLabel('接口基础地址',{exact:true}).fill(`http://127.0.0.1:${server.address().port}/v1`);
  await page.getByLabel('API Key',{exact:true}).fill('fake-local-key');
@@ -100,7 +100,7 @@ try{
  await button('上传图片').click();
  await page.getByText('未保存',{exact:true}).waitFor();
  await button('保存本行').click();
- assert.equal((await call('getState')).settings.lastImageDirectory,path.dirname(image));
+ assert.equal(JSON.parse(await fs.readFile(path.join(data,'dialog-paths.json'),'utf8')).image,path.dirname(image));
  const [failed]=await call('enqueueImages',[row.id]);
  await wait(failed.id,'failed');
  await page.getByLabel('图片比例',{exact:true}).selectOption('3:4');
@@ -147,7 +147,10 @@ try{
  ]);
 
  const [audioAsset]=await call('importFiles',[music,voice],'audio','验收');
- const montage=await call('enqueueMontage',{name:'多轨成片验收',ratio:'9:16',subtitle:true,segments:[{section:'A',text:'原始字幕。',paths:[image],audioPath:voice}]});
+ await call('saveProvider',{id:'review-fixture',name:'本地校对',protocol:'openai-chat',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,model:'fixture',key:'fake-local-key'});
+ const montageSetup={mode:'sections',sections:[{section:'A',candidates:['原始字幕。'],paths:[image]}]};
+ const checked=await call('reviewMontageCombinations',{setup:montageSetup,indices:[0],providerId:'review-fixture'});
+ const montage=await call('enqueueMontage',{setup:montageSetup,reviewSourceKey:checked.sourceKey,reviewIndex:0,name:'多轨成片验收',ratio:'9:16',subtitle:true,masterText:'原始字幕。',masterAudioPath:voice,segments:[{section:'A',text:'原始字幕。',paths:[image],audioPath:voice}]});
  await wait(montage.id,'succeeded');
  const record=await call('openTimeline',montage.id);
  record.timeline.clips.push({id:'music',track:'music',path:audioAsset.path,start:.3,duration:1,sourceIn:.2,volume:.2});
@@ -212,7 +215,7 @@ try{
  await page.screenshot({path:path.join(out,'image-progress.png')});
  finishSecond.resolve();
  await page.waitForFunction(()=>document.querySelectorAll('.status-succeeded .result-image img.image-revealed').length===2);
- assert.equal(requests.filter(item=>item.path==='/v1/chat/completions').length,1);
+ assert.equal(requests.filter(item=>item.path==='/v1/chat/completions').length,2,'包含一次成片全文校对和一次图片差异方案尝试');
  await app.close();
  app=await launch();
  await interceptDesktop(app,[]);
@@ -222,7 +225,7 @@ try{
  assert.equal(restored.jobs.filter(job=>job.archivedAt&&job.status==='succeeded').length,1);
  const archived=restored.jobs.find(job=>job.archivedAt&&job.status==='succeeded');
  assert.match(archived.localPath,/results[\\/]01_补位和归档验收_\d{4}-\d{2}-\d{2}_0001[\\/]0001\.png$/);
- assert.equal(restored.settings.lastImageDirectory,path.dirname(image));
+ assert.equal(JSON.parse(await fs.readFile(path.join(data,'dialog-paths.json'),'utf8')).image,path.dirname(image));
  assert.deepEqual(await reopened.evaluate(()=>window.studio.chooseFiles('image')),[]);
  assert.deepEqual(await app.evaluate(()=>globalThis.desktopCalls.pickers),[path.dirname(image)]);
  assert.deepEqual(restored.settings.imageTypeNames,['转账截图','笔记爆款截图','妆容素材截图']);

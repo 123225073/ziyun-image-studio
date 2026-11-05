@@ -8,9 +8,10 @@ export function montageReviewSignature(setup = {}) {
     id: String(section.id || ''), section: String(section.section || ''),
     enabled: section.enabled !== false, candidateMode: section.candidateMode === 'files' ? 'files' : 'texts',
     candidates: mode === 'master' ? [] : splitTexts(section.candidates),
+    candidateBindings: mode === 'master' ? [] : section.candidateBindings || [],
     paths: [...(section.paths || [])], assetIds: [...(section.assetIds || [])],
   }));
-  return JSON.stringify({ version: 1, mode, masterText: mode === 'master' ? String(setup.masterText || '').trim() : '', sections });
+  return JSON.stringify({ version: 2, mode, masterText: mode === 'master' ? String(setup.masterText || '').trim() : '', masterBindings: mode === 'master' ? setup.masterBindings || [] : [], sections });
 }
 
 export function montageReviewCombination(setup, index) {
@@ -18,7 +19,7 @@ export function montageReviewCombination(setup, index) {
   const text = String(setup.masterText || '').trim();
   if (index !== 0 || !text) throw new Error('组合序号超出有效范围。');
   const active = setup.sections.filter(section => section.enabled !== false);
-  return { masterText: text, segments: [{ section: '正文', text, paths: active.flatMap(section => section.paths || []), assetIds: active.flatMap(section => section.assetIds || []) }] };
+  return { masterText: text, segments: [{ section: '正文', text, paths: active.flatMap(section => section.paths || []), assetIds: active.flatMap(section => section.assetIds || []), ...(setup.masterBindings?.length ? { bindings: setup.masterBindings } : {}) }] };
 }
 
 export const montageReviewCapacity = setup => setup.mode === 'master' ? (String(setup.masterText || '').trim() ? 1 : 0) : batchCapacity(setup.sections);

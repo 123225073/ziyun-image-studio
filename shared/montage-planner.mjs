@@ -99,6 +99,15 @@ export function planMontage(config, { assets = [] } = {}) {
     }
     if (!Number.isFinite(duration) || duration <= 0 || duration > 600) throw new Error('混剪段落时长须为 0–600 秒。');
     const candidates = candidatesFor(segment, assets);
+    if (segment.selectionMode === 'folder-random') {
+      const images = candidates.filter(shot => shot.kind === 'image');
+      if (!images.length) {
+        missing.push({ section, text: segment.text, reason: '文字绑定目录内没有可解码的图片，请重新选择素材目录。' });
+        return { ...segment, duration, shots: [] };
+      }
+      const selected = images[tieOrder(segment.bindingId || section, config.seed || 0) % images.length];
+      return { ...segment, duration, shots: [{ id: selected.id, assetId: selected.assetId, path: selected.path, thumbnailPath: selected.thumbnailPath, sourceIn: 0, duration: round(duration), text: segment.text, reason: '按此文字范围绑定的目录随机选图。', needsReview: false, locked: false }] };
+    }
     const locked = (segment.shots || []).filter(shot => shot.locked);
     if (locked.length) {
       if (!locked.every(shot => validLockedShot(shot, candidates))) {

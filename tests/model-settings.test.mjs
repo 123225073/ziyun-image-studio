@@ -32,5 +32,6 @@ test('platform defaults contain no inherited credentials and keep supported spee
   assert.equal(draft.hasKey, false);
   assert.equal(draft.resourceId, 'seed-tts-2.0');
   assert.equal(draft.protocol, 'doubao-tts');
-  assert.equal(draft.model, 'seed-tts-2.0');
+  assert.equal(draft.model, '');
+  assert.ok(draft.models.includes('seed-tts-2.0'));
 });

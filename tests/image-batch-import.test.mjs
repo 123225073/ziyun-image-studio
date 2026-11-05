@@ -96,19 +96,19 @@ test('ambiguous project names require an ID, while an explicit ID is accepted',(
 
 test('optional export location maps a type folder to its mother and child output, while old 12-column sheets stay ordinary',async t=>{
  const {dir,file}=await fixture(t),typeDir=path.join(dir,'C01-素材类型');await fs.mkdir(path.join(typeDir,'子图'),{recursive:true});
- await fs.writeFile(path.join(typeDir,'母图.png'),png);await fs.writeFile(path.join(typeDir,'其他.png'),png);await fs.writeFile(path.join(typeDir,'子图','旧结果.png'),png);
+ await fs.writeFile(path.join(typeDir,'母图.png'),png);await fs.writeFile(path.join(typeDir,'母图2.png'),png);await fs.writeFile(path.join(typeDir,'其他.png'),png);await fs.writeFile(path.join(typeDir,'子图','旧结果.png'),png);
  await book(file,[{name:'母图行',sourceInput:'C01-素材类型',outputLocation:'原目录子图',autoDescribe:'X'}]);
  const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.validCount,1);assert.equal(parsed.reverseCount,1);
- const row=parsed.rows[0],realTypeDir=await fs.realpath(typeDir);assert.equal(row.outputLocation,'原目录子图');assert.equal(row.outputMapping.outputMode,'source-children');assert.equal(row.outputMapping.outputPath,path.join(realTypeDir,'子图'));assert.equal(row.values.sourceMode,'single');assert.deepEqual(row.values.sourcePaths,[path.join(realTypeDir,'母图.png')]);
+ const row=parsed.rows[0],realTypeDir=await fs.realpath(typeDir);assert.equal(row.outputLocation,'原目录子图');assert.equal(row.outputMapping.outputMode,'source-children');assert.equal(row.outputMapping.outputPath,path.join(realTypeDir,'子图'));assert.equal(row.values.sourceMode,'single');assert.deepEqual([...row.values.sourcePaths].sort(),['母图.png','母图2.png'].map(name=>path.join(realTypeDir,name)).sort());assert.equal(row.values.referenceMode,'all');assert.equal(row.values.folderName,row.outputMapping.outputPath);
  assert.equal('outputMode' in row.values,false,'映射不混入普通行字段');
  const duplicate=await parseImageBatchWorkbook(file,{settings,existingRows:[{code:'Z99',outputMode:'source-children',sourceFolder:realTypeDir}]});assert.equal(duplicate.invalidCount,1);assert.match(duplicate.rows[0].errors.join(' '),/已导入/);
  await book(file,[{name:'旧12列',sourceInput:'C01-素材类型'}],(_,sheet)=>{sheet.spliceColumns(13,1)});
- const legacy=await parseImageBatchWorkbook(file,{settings});assert.equal(legacy.validCount,1);assert.equal(legacy.rows[0].outputMapping,undefined);assert.equal(legacy.rows[0].values.sourcePaths.length,2);
+ const legacy=await parseImageBatchWorkbook(file,{settings});assert.equal(legacy.validCount,1);assert.equal(legacy.rows[0].outputMapping,undefined);assert.equal(legacy.rows[0].values.sourcePaths.length,3);assert.equal(legacy.rows[0].values.referenceMode,'rotate');
 });
 
 test('source-child export requires a valid type directory and rejects competing output fields',async t=>{
  const {file}=await fixture(t);
  await book(file,[{name:'错误导出位置',outputLocation:'任意外部位置'},{name:'需要目录',outputLocation:'原目录子图'},{name:'不能是图',sourceInput:'素材/图1.png',outputLocation:'原目录子图'},{name:'不自动任选',sourceInput:'素材',outputLocation:'原目录子图'},{name:'冲突子目录',sourceInput:'素材',outputLocation:'原目录子图',folderName:'另一个地方'}]);
- const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.invalidCount,5);assert.equal(parsed.reverseCount,0);
+ const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.invalidCount,4);assert.equal(parsed.reverseCount,0);assert.equal(parsed.rows[3].values.sourcePaths.length,2);assert.equal(parsed.rows[3].values.referenceMode,'all');
  assert.match(parsed.rows[0].errors.join(' '),/导出位置/);assert.match(parsed.rows[1].errors.join(' '),/需要填写/);assert.match(parsed.rows[4].errors.join(' '),/清空保存子目录/);
 });

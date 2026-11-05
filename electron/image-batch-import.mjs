@@ -110,7 +110,15 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
             const key=folderKey(row.outputMapping.sourceFolder);
             if(occupiedFolders.has(key))throw new Error('这个类型目录已导入或在本表中重复，请编辑已有任务或移除重复行。');
             occupiedFolders.add(key);
-            source=await resolveSource(row.outputMapping.motherPath);
+            const mothers=[];
+            for(const motherPath of row.outputMapping.motherPaths){
+              const resolved=await resolveSource(motherPath);
+              if(resolved?.sourceMode==='folder'||resolved?.sourcePaths?.length!==1||folderKey(resolved.sourcePaths[0])!==folderKey(motherPath))throw new Error('母图解析结果发生变化，请重新选择 Excel。');
+              mothers.push(motherPath);
+            }
+            source={sourceMode:'single',sourcePaths:mothers};
+            row.values.referenceMode='all';
+            row.values.folderName=row.outputMapping.outputPath;
             row.warnings.push(...(row.outputMapping.warnings||[]));
           }else source=await resolveSource(row.resolvedSourcePath);
           if(!source||!Array.isArray(source.sourcePaths)||!source.sourcePaths.length||source.sourcePaths.length>500||!source.sourcePaths.every(file=>typeof file==='string'&&path.isAbsolute(file)))throw new Error('参考素材路径未返回有效图片。');
@@ -143,7 +151,7 @@ export async function writeImageBatchTemplate(filePath,{settings={}}={}){
   guide.addRow(['导入方式','先预览，再确认','只新增任务，不覆盖现有行，不会自动生成图片。']);
   guide.addRow(['自动反推','填写 X 且参考提示词为空','确认导入时显示调用次数；手工提示词始终优先，反推失败行保留供重试。']);
   guide.addRow(['文件范围','本地 .xlsx','不需要嵌入图片；公式与超链接不支持，请粘贴为普通文字或数值。']);
-  guide.addRow(['数量限制','500 行 / 10 MiB','每格最多 12000 字符，总文本最多 200 万字符。文件夹只读取直接包含的图片。']);
+  guide.addRow(['数量限制','500 行 / 10 MiB','每格最多 12000 字符，总文本最多 200 万字符。文件夹只读取直接包含的图片；原目录子图每行最多 16 张母图，会同时作为一组参考。']);
   guide.addRow([]);guide.addRow(['列名称','留空时采用','填写说明']);
   const defaultTemplate=(settings.templates||[]).find(item=>item.id===settings.defaultTemplateId);
   for(const column of IMAGE_BATCH_COLUMNS)guide.addRow([column.title,column.key==='template'?(defaultTemplate?.name||'不使用模板'):column.defaultText,column.help]);

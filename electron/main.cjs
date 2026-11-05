@@ -1,13 +1,14 @@
 const {app,BrowserWindow,ipcMain,dialog,shell,safeStorage,protocol,net}=require('electron');
 const fs=require('node:fs');const fsp=require('node:fs/promises');const path=require('node:path');const {pathToFileURL}=require('node:url');const {Readable}=require('node:stream');const {randomUUID}=require('node:crypto');
 protocol.registerSchemesAsPrivileged([{scheme:'studio-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
-let win,service,vault={},vaultFile,quitting=false,unsaved=false;
+let win,service,pickers,vault={},vaultFile,quitting=false,unsaved=false;
 const root=path.resolve(__dirname,'..');
 app.setName('子云影像工坊');
 if(process.env.ZIYUN_DATA_DIR)app.setPath('userData',path.resolve(process.env.ZIYUN_DATA_DIR));
 const dataDir=app.getPath('userData');
 const imageBatchPreviews=new Map();
 const imageFolderPreviews=new Map();
+const imageOutputSelections=new Map();
 async function persistVault(){await fsp.mkdir(dataDir,{recursive:true});const temp=vaultFile+'.tmp';await fsp.writeFile(temp,JSON.stringify(vault),{mode:0o600});await fsp.rename(temp,vaultFile);}
 function keyFor(id){if(!vault[id])return '';if(!safeStorage.isEncryptionAvailable())throw new Error('Windows安全存储不可用，无法读取模型密钥。');return safeStorage.decryptString(Buffer.from(vault[id],'base64'));}
 const accountVaultId=id=>'oairegbox-account:'+id;
@@ -52,7 +53,7 @@ async function saveProvider(provider){
 }
 async function removeProvider(id){const state=await service.getState();if(state.jobs.some(j=>j.providerId===id&&['running','saving','queued','planning','unknown'].includes(j.status)))throw new Error('此连接仍有未完成或状态未知的任务，请先核对任务后再删除。');if(state.settings.speechPresets?.some(p=>p.providerId===id))throw new Error('请先删除或更换使用此连接的配音预设。');const bindings={...state.settings.bindings};for(const k of Object.keys(bindings))if(bindings[k]===id)bindings[k]='';await service.updateSettings({providers:state.settings.providers.filter(p=>p.id!==id),bindings});delete vault[id];delete vault[accountVaultId(id)];await persistVault();}
 const selectedPaths=new Set();
-async function allowedPaths(){const s=await service.getState();const sectionMedia=sections=>(Array.isArray(sections)?sections:Object.values(sections||{})).flatMap(seg=>[...(seg.paths||[]),seg.audioPath,...(seg.shots||[]).map(shot=>shot.path)]).filter(Boolean);const files=[...selectedPaths,...(s.montageDrafts||[]).flatMap(d=>[d.config?.openingPath,d.config?.masterAudioPath,...(d.timeline?.clips||[]).map(c=>c.path)]),...(s.montageSetup?.sections||[]).flatMap(section=>section.paths||[]),s.montageSetup?.masterAudioPath,s.montageSetup?.openingPath,...s.assets.map(a=>a.path),...(s.montageAssets||[]).flatMap(a=>[a.path,...(a.shots||[]).map(shot=>shot.thumbnailPath)]),...s.rows.flatMap(r=>r.sourcePaths||[]),...s.jobs.flatMap(j=>[j.localPath,...(j.referencePaths||[]),j.snapshot?.config?.openingPath,j.snapshot?.config?.masterAudioPath,...sectionMedia(j.snapshot?.config?.segments),...(j.timeline?.clips||[]).map(c=>c.path),...(j.snapshot?.config?.timeline?.clips||[]).map(c=>c.path)]),...s.formulas.flatMap(f=>[f.openingPath,f.masterAudioPath,...sectionMedia(f.sections)])].filter(Boolean);return new Set(files.map(p=>path.resolve(p).toLowerCase()));}
+async function allowedPaths(){const s=await service.getState();const sectionMedia=sections=>(Array.isArray(sections)?sections:Object.values(sections||{})).flatMap(seg=>[...(seg.paths||[]),seg.audioPath,...(seg.shots||[]).map(shot=>shot.path)]).filter(Boolean);const files=[...selectedPaths,...(s.montageBindingLibrary?.folders||[]).flatMap(folder=>folder.paths||[]),...(s.montageDrafts||[]).flatMap(d=>[d.config?.openingPath,d.config?.masterAudioPath,...(d.timeline?.clips||[]).map(c=>c.path)]),...(s.montageSetup?.sections||[]).flatMap(section=>section.paths||[]),s.montageSetup?.masterAudioPath,s.montageSetup?.openingPath,...s.assets.map(a=>a.path),...(s.montageAssets||[]).flatMap(a=>[a.path,...(a.shots||[]).map(shot=>shot.thumbnailPath)]),...s.rows.flatMap(r=>r.sourcePaths||[]),...s.jobs.flatMap(j=>[j.localPath,...(j.referencePaths||[]),j.snapshot?.config?.openingPath,j.snapshot?.config?.masterAudioPath,...sectionMedia(j.snapshot?.config?.segments),...(j.timeline?.clips||[]).map(c=>c.path),...(j.snapshot?.config?.timeline?.clips||[]).map(c=>c.path)]),...s.formulas.flatMap(f=>[f.openingPath,f.masterAudioPath,...sectionMedia(f.sections)])].filter(Boolean);return new Set(files.map(p=>path.resolve(p).toLowerCase()));}
 function checkSender(event){if(!win||event.sender.id!==win.webContents.id||event.senderFrame!==win.webContents.mainFrame)throw new Error('此窗口没有操作权限。');}
 function mediaHeaders(file){const ext=path.extname(file).toLowerCase();return {'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp','.mp4':'video/mp4','.mov':'video/quicktime','.webm':'video/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac','.ogg':'audio/ogg'}[ext];}
 async function setup(){
@@ -79,6 +80,10 @@ async function setup(){
  };
  service=await StudioService.create({dataDir,providerRunner,inspectAudio:(file,signal)=>mediaDuration(ffmpegPath,file,signal),concatSpeech,montageScanner:(folder,options)=>scanMontageFolder(folder,{...options,ffmpegPath,indexDir:path.join(dataDir,'montage-index')}),videoDownloadFetch:(url,options)=>net.fetch(url,{...options,credentials:'omit'}),renderRunner:async(config,context)=>{const s=await service.getState();const segments=(config.segments||[]).map(seg=>({...seg,paths:[...(seg.paths||[]),...s.assets.filter(a=>(seg.assetIds||[]).includes(a.id)).map(a=>a.path)]}));return renderMontage({...config,segments},{...context,ffmpegPath});},onChange:s=>{if(win&&!win.isDestroyed())win.webContents.send('studio:changed',s);}});
  service.prepareTimeline=config=>prepareMontageTimeline(config,{},ffmpegPath);
+ const {createDialogPaths}=await import('./dialog-paths.mjs');
+ pickers=await createDialogPaths({file:path.join(dataDir,'dialog-paths.json'),dialog,window:()=>win,legacyImageDirectory:imageDefaultPath,fallback:async key=>{
+  const state=await service.getState();return key==='output'?state.settings.outputDir:key==='jianying'?state.settings.jianyingDraftRoot:key==='excel-template'?app.getPath('downloads'):undefined;
+ }});
  protocol.handle('studio-media',async request=>{
   try{const url=new URL(request.url);const file=path.resolve(url.searchParams.get('path')||'');if(!(await allowedPaths()).has(file.toLowerCase())||!mediaHeaders(file))return new Response('Denied',{status:403});const stat=await fsp.stat(file);if(!stat.isFile())return new Response('Missing',{status:404});const handle=await fsp.open(file,'r');const bytes=Buffer.alloc(32);await handle.read(bytes,0,32,0);await handle.close();if(!sniffMedia(bytes))return new Response('Invalid media',{status:415});
    const range=request.headers.get('range');let start=0,end=stat.size-1,status=200;const headers={'Content-Type':mediaHeaders(file),'Accept-Ranges':'bytes','Cache-Control':'no-store'};
@@ -89,7 +94,7 @@ async function setup(){
  if(process.argv.includes('--configure-cpa')){
   const input=process.env.ZIYUN_CONFIG_PIPE?require('node:net').createConnection(process.env.ZIYUN_CONFIG_PIPE):process.stdin;if(input!==process.stdin)input.setTimeout(15000,()=>input.destroy(new Error('本机配置通道超时。')));let text='';for await(const chunk of input){text+=chunk.toString();if(Buffer.byteLength(text)>131072){input.destroy();throw new Error('配置输入过大。');}}const config=JSON.parse(text);if(!Array.isArray(config.providers)||config.providers.length>8)throw new Error('配置格式错误。');for(const p of config.providers)await saveProvider(p);await service.updateSettings({bindings:config.bindings||{}});await service.close();process.stdout.write('CPA_CONFIGURED\n');app.exit(0);return;
  }
- const methods=new Set(['getState','reorderRows','saveRowCode','saveMontageSetup','createMontageDraft','reviewMontageCombinations','suggestMontageCombination','acceptMontageSuggestion','updateSettings','saveRow','deleteRow','deleteRows','importFiles','scanFolder','enqueueImages','enqueueVideo','enqueueMontage','enqueueSpeech','planMontage','editMontageShot','retryJobs','selectJobs','setPaused','exportJobs','saveFormula','describe','rewritePrompt','deleteFailedImages','archiveImages','saveTimeline','openTimeline','enqueueTimeline']);
+ const methods=new Set(['getState','reorderRows','saveRowCode','saveMontageSetup','createMontageDraft','reviewMontageCombinations','suggestMontageCombination','acceptMontageSuggestion','resolveMontageBindings','updateSettings','saveRow','deleteRow','deleteRows','importFiles','scanFolder','enqueueImages','enqueueVideo','enqueueMontage','enqueueSpeech','planMontage','editMontageShot','retryJobs','selectJobs','setPaused','exportJobs','saveFormula','describe','rewritePrompt','deleteFailedImages','archiveImages','saveTimeline','openTimeline','enqueueTimeline']);
  ipcMain.handle('studio:call',async(event,method,...args)=>{try{checkSender(event);if(method==='saveProvider')return {ok:true,value:await saveProvider(args[0])};if(method==='deleteProvider'){await removeProvider(args[0]);return {ok:true};}if(method==='fetchProviderModels'){
     const draft=args[0] || {};
     const state=await service.getState();
@@ -122,13 +127,42 @@ async function setup(){
     await shell.openExternal(OAIREGBOX_CONSOLE+route);
     return {ok:true};
    }if(method==='testProvider'||method==='models'){const s=await service.getState();const p=s.settings.providers.find(p=>p.id===(typeof args[0]==='string'?args[0]:args[0]?.id));if(!p)throw new Error('请先保存连接。');const result=await providerRunner('models',{}, {provider:p});return {ok:true,value:{ok:true,message:TTS_PROTOCOLS.includes(p.protocol)?'语音配置已校验，型号来自官方目录。账号权限请通过生成试听验证。':`已连接，返回${result.models?.length||0}个模型。此检查不代表所有生成能力通过。`,models:result.models,detail:result.text}};}
+   if(method==='chooseImageOutputFolder'){
+    const input=await pickers.open('image-output',{title:'选择类型目录（结果保存到其中的子图）',properties:['openDirectory']});
+    if(input.canceled||!input.filePaths.length)return {ok:true,value:null};
+    const {inspectImageOutputFolder}=await import('./image-folder-import.mjs');
+    const mapping=await inspectImageOutputFolder(input.filePaths[0]);
+    const outputMappingToken=randomUUID();imageOutputSelections.set(outputMappingToken,mapping);
+    if(imageOutputSelections.size>100)imageOutputSelections.delete(imageOutputSelections.keys().next().value);
+    return {ok:true,value:{...mapping,outputMappingToken}};
+   }
+   if(method==='saveRow'){
+    const input={...args[0]};const token=input.outputMappingToken;delete input.outputMappingToken;
+    let mapping;
+    if(token&&!input.clearOutputMapping){
+     const expected=imageOutputSelections.get(token);if(!expected)throw new Error('保存位置选择已失效，请重新选择目录。');
+     const {inspectImageOutputFolder}=await import('./image-folder-import.mjs');
+     mapping=await inspectImageOutputFolder(expected.sourceFolder,{sourceRoot:expected.sourceRoot,allowChildSelection:false});
+     if(JSON.stringify(mapping)!==JSON.stringify(expected))throw new Error('保存目录已变化，请重新选择。');
+    }
+    return {ok:true,value:await service.saveRow(input,mapping)};
+   }
+   if(method==='scanMontageBindingFolders'){
+    let folder=args[0];
+    if(!folder){const result=await pickers.open('montage-root',{title:'选择包含图片子文件夹的素材总目录',properties:['openDirectory']});if(result.canceled||!result.filePaths.length)return {ok:true,value:null};folder=result.filePaths[0];selectedPaths.add(folder);}
+    const state=await service.getState();
+    if(typeof folder!=='string'||!path.isAbsolute(folder)||(!selectedPaths.has(folder)&&state.montageBindingLibrary?.rootPath!==folder))throw new Error('请先通过文件夹选择器选择素材总目录。');
+    const library=await service.scanMontageBindingFolders(folder);
+    for(const group of library.folders)for(const file of group.paths)selectedPaths.add(file);
+    return {ok:true,value:library};
+   }
    if(method==='previewImageFolderImport'){
     let folder=args[0];
     if(folder){if(typeof folder!=='string'||!path.isAbsolute(folder)||!selectedPaths.has(folder))throw new Error('请先通过文件夹选择器选择导入目录。');}
-    else{const input=await dialog.showOpenDialog(win,{title:'选择包含各素材类型的总文件夹',properties:['openDirectory']});if(input.canceled||!input.filePaths.length)return {ok:true,value:null};folder=input.filePaths[0];selectedPaths.add(folder);}
+    else{const input=await pickers.open('image-types',{title:'选择包含各素材类型的总文件夹',properties:['openDirectory']});if(input.canceled||!input.filePaths.length)return {ok:true,value:null};folder=input.filePaths[0];selectedPaths.add(folder);}
     const {scanImageFolderImport}=await import('./image-folder-import.mjs');
     const plan=await scanImageFolderImport(folder,{existingRows:service.state.rows,settings:service.state.settings});
-    for(const row of plan.rows)if(row.motherPath&&!row.errors.length)selectedPaths.add(row.motherPath);
+    for(const row of plan.rows)if(!row.errors.length)for(const file of row.motherPaths||[row.motherPath])if(file)selectedPaths.add(file);
     const previewId=randomUUID();
     imageFolderPreviews.set(previewId,plan);
     if(imageFolderPreviews.size>20)imageFolderPreviews.delete(imageFolderPreviews.keys().next().value);
@@ -143,17 +177,17 @@ async function setup(){
     const current=await scanImageFolderImport(preview.rootPath,{existingRows:service.state.rows,settings:service.state.settings});
     if(current.errors.length||current.invalidCount||JSON.stringify(current.rows)!==JSON.stringify(preview.rows))throw new Error('母图、目录内容或任务编号已变化，请重新预览再导入。');
     const result=await service.importImageFolderBatch(previewId,current.rows);
-    for(const row of current.rows)selectedPaths.add(row.motherPath);
+    for(const row of current.rows)for(const file of row.motherPaths||[row.motherPath])if(file)selectedPaths.add(file);
     return {ok:true,value:result};
    }
    if(method==='downloadImageBatchTemplate'){
-    const output=await dialog.showSaveDialog(win,{title:'保存图片任务导入模板',defaultPath:path.join(app.getPath('downloads'),'图片任务批量导入模板.xlsx'),filters:[{name:'Excel 模板',extensions:['xlsx']}]});
+    const output=await pickers.save('excel-template',{title:'保存图片任务导入模板',defaultPath:path.join(app.getPath('downloads'),'图片任务批量导入模板.xlsx'),filters:[{name:'Excel 模板',extensions:['xlsx']}]});
     if(output.canceled||!output.filePath)return {ok:true,value:null};
     const {writeImageBatchTemplate}=await import('./image-batch-import.mjs');
     return {ok:true,value:await writeImageBatchTemplate(output.filePath,{settings:service.state.settings})};
    }
    if(method==='previewImageBatchImport'){
-    const input=await dialog.showOpenDialog(win,{title:'选择图片任务 Excel',properties:['openFile'],filters:[{name:'Excel 工作簿',extensions:['xlsx']}]});
+    const input=await pickers.open('excel-import',{title:'选择图片任务 Excel',properties:['openFile'],filters:[{name:'Excel 工作簿',extensions:['xlsx']}]});
     if(input.canceled||!input.filePaths.length)return {ok:true,value:null};
     const {parseImageBatchWorkbook}=await import('./image-batch-import.mjs');
     const plan=await parseImageBatchWorkbook(input.filePaths[0],{existingRows:service.state.rows,settings:service.state.settings,resolveSource:file=>service.prepareReferenceDrop([file])});
@@ -179,7 +213,7 @@ async function setup(){
    if(method==='scanMontageLibrary'){
     const input={...args[0]};
     if(!input.assetIds?.length){
-     if(!input.folder){const result=await dialog.showOpenDialog(win,{title:'选择混剪素材文件夹',properties:['openDirectory']});if(result.canceled)return {ok:true,value:{assets:[]}};input.folder=result.filePaths[0];selectedPaths.add(input.folder);}
+     if(!input.folder){const result=await pickers.open('montage-section',{title:'选择混剪素材文件夹',properties:['openDirectory']});if(result.canceled)return {ok:true,value:{assets:[]}};input.folder=result.filePaths[0];selectedPaths.add(input.folder);}
      const state=await service.getState();
      const folder=path.resolve(input.folder);
      if(!selectedPaths.has(folder)&&!(state.montageFolders||[]).includes(folder))throw new Error('请通过文件夹选择器导入混剪素材。');
@@ -233,24 +267,20 @@ async function setup(){
   checkSender(event);
   const images=['png','jpg','jpeg','webp','gif','bmp'];
   const extensions=kind==='h3-reference'?[...images,'mp4','mov','mp3','wav']:kind==='video'?['mp4','mov','webm']:kind==='media'?[...images,'mp4','mov','webm']:kind==='audio'?['mp3','wav','m4a','aac','ogg']:images;
-  const defaultPath=kind==='image'?await imageDefaultPath():undefined;
-  const result=await dialog.showOpenDialog(win,{title:'选择素材文件',...(defaultPath?{defaultPath}:{}),properties:['openFile','multiSelections'],filters:[{name:'素材文件',extensions}]});
+  const result=await pickers.open(['image','video','media','audio','h3-reference'].includes(kind)?kind:'image',{title:'选择素材文件',properties:['openFile','multiSelections'],filters:[{name:'素材文件',extensions}]});
   if(result.canceled||!result.filePaths.length)return [];
-  if(kind==='image')await service.updateSettings({lastImageDirectory:path.dirname(result.filePaths[0])});
   for(const file of result.filePaths)selectedPaths.add(file);
   return result.filePaths;
  });
  ipcMain.handle('studio:reference-drop',async(event,paths)=>{
-  try{checkSender(event);const result=await service.prepareReferenceDrop(paths);for(const file of result.sourcePaths)selectedPaths.add(file);await service.updateSettings({lastImageDirectory:path.dirname(result.sourcePaths[0])});return {ok:true,value:result};}
+  try{checkSender(event);const result=await service.prepareReferenceDrop(paths);for(const file of result.sourcePaths)selectedPaths.add(file);await pickers.remember('image',result.sourcePaths[0],'file');return {ok:true,value:result};}
   catch(error){return {ok:false,error:error.message||'拖入图片失败。'};}
  });
  ipcMain.handle('studio:folder',async(event,purpose)=>{
   checkSender(event);
-  const defaultPath=purpose==='image'?await imageDefaultPath():undefined;
-  const result=await dialog.showOpenDialog(win,{title:'选择文件夹',...(defaultPath?{defaultPath}:{}),properties:['openDirectory','createDirectory']});
+  const result=await pickers.open(['image','output','jianying','montage-root','montage-section','image-output'].includes(purpose)?purpose:'output',{title:'选择文件夹',properties:['openDirectory','createDirectory']});
   const selected=result.canceled?null:result.filePaths[0];
   if(selected)selectedPaths.add(selected);
-  if(selected&&purpose==='image')await service.updateSettings({lastImageDirectory:selected});
   return selected;
  });
  ipcMain.handle('studio:open-output',async(event,ids)=>{

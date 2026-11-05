@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Plus, Trash, ListPlus, X } from '@phosphor-icons/react';
 import { splitTexts } from '../shared/montage-batch.mjs';
+import TextMaterialEditor,{emptyTextBindings} from './TextMaterialEditor.jsx';
 
 // Stored candidates are distinct entries. Newlines inside an entry are content,
 // not a delimiter; legacy strings keep the original import interpretation.
@@ -8,23 +9,25 @@ export function candidateEntries(value) {
   return Array.isArray(value) ? value.map(item => String(item ?? '')) : splitTexts(value);
 }
 
-export default function CandidateEditor({ section, value, onChange }) {
+export default function CandidateEditor({ section, value, bindings=[],folders=[],onChange }) {
   const entries = candidateEntries(value);
   const [importing, setImporting] = useState(false);
   const [raw, setRaw] = useState('');
   const [delimiter, setDelimiter] = useState('blank');
   const oversized=raw.length>200000;
   const imported = useMemo(() => raw.length>200000?[]:raw.split(delimiter === 'pipe' ? /[|｜]/ : delimiter === 'line' ? /\r?\n/ : /\r?\n\s*\r?\n/).map(text => text.trim()).filter(Boolean), [raw, delimiter]);
-  const add = () => onChange([...entries, '']);
+  const records=entries.map((text,index)=>bindings[index]||emptyTextBindings(text));
+  const change=(next,nextBindings=records)=>onChange(next,nextBindings);
+  const add = () => change([...entries, ''],[...records,emptyTextBindings('')]);
   return <div className="candidate-editor" data-testid={`candidates-${section}`}>
     <div className="candidate-list">
       {entries.map((text, index) => <div className="candidate-entry" key={index}>
         <span className="candidate-number">{String(index + 1).padStart(2, '0')}</span>
-        <textarea aria-label={`${section} 段候选文案 ${index + 1}`} value={text} rows={2}
-          onChange={event => onChange(entries.map((entry, i) => i === index ? event.target.value : entry))}
-          placeholder="填写这一条完整文案，支持多行文字"/>
+        <TextMaterialEditor label={`${section} 段候选文案 ${index + 1}`} text={text} record={records[index]} folders={folders}
+          onTextChange={next=>change(entries.map((entry,i)=>i===index?next:entry),records.map((record,i)=>i===index&&!record.bindings.length?emptyTextBindings(next):record))}
+          onBindingsChange={next=>change(entries,records.map((record,i)=>i===index?next:record))}/>
         <button className="icon-button" aria-label={`删除 ${section} 段文案 ${index + 1}`} title="删除这条候选文案"
-          onClick={() => onChange(entries.filter((_, i) => i !== index))}><Trash size={16}/></button>
+          onClick={() => change(entries.filter((_, i) => i !== index),records.filter((_,i)=>i!==index))}><Trash size={16}/></button>
       </div>)}
       {!entries.length && <button className="candidate-empty" onClick={add}><Plus size={17}/>添加第一条候选文案</button>}
     </div>
@@ -48,7 +51,7 @@ export default function CandidateEditor({ section, value, onChange }) {
         <h3>将追加 {imported.length} 条</h3>
         <ol className="candidate-import-preview">{imported.map((text, index) => <li key={index}>{text}</li>)}</ol>
         {!imported.length && <p className="muted">粘贴后在这里检查分段结果。</p>}
-        <div className="modal-actions"><button className="button" onClick={() => setImporting(false)}>取消</button><button className="button primary" disabled={!imported.length||oversized} onClick={() => { if(onChange([...entries, ...imported])!==false)setImporting(false); }}>确认追加 {imported.length} 条</button></div>
+        <div className="modal-actions"><button className="button" onClick={() => setImporting(false)}>取消</button><button className="button primary" disabled={!imported.length||oversized} onClick={() => { if(change([...entries, ...imported],[...records,...imported.map(emptyTextBindings)])!==false)setImporting(false); }}>确认追加 {imported.length} 条</button></div>
       </section>
     </div>}
   </div>;

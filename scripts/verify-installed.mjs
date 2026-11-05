@@ -21,6 +21,9 @@ try {
     version: app.getVersion(), packaged: app.isPackaged,
   })), { version: pkg.version, packaged: true });
   let page = await application.firstWindow({ timeout: 30000 });
+  // firstWindow and working IPC can precede completion of main's loadFile.
+  // Closing then aborts startup navigation and opens a native error dialog.
+  await page.waitForLoadState('load', { timeout: 30000 });
   await page.getByTestId('add-row').click({ timeout: 30000 });
   const deadline = Date.now() + 15000;
   let saved;
@@ -34,6 +37,7 @@ try {
   await application.close();
   application = await electron.launch({ executablePath, env, timeout: 60000 });
   page = await application.firstWindow({ timeout: 30000 });
+  await page.waitForLoadState('load', { timeout: 30000 });
   const state = await page.evaluate(() => window.studio.call('getState'));
   assert.equal(state.rows.length, 1);
   assert.equal(state.settings.providers.length, 0);

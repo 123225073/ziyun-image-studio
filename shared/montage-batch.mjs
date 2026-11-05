@@ -1,3 +1,5 @@
+import { candidateMontageBindings } from './montage-bindings.mjs';
+
 // Fixed workflow: one candidate from each enabled section, in visible order.
 // New editors store each candidate separately, so newlines inside one entry
 // remain part of that candidate. Legacy text keeps its original line splitting.
@@ -7,10 +9,21 @@ export const splitTexts = value => (Array.isArray(value)
   .map(text => text.trim()).filter(Boolean);
 export function batchChoices(sections) {
   return sections.filter(section => section.enabled !== false).map(section => {
-    const texts = [...new Set(splitTexts(section.candidates))];
+    const entries = Array.isArray(section.candidates) ? section.candidates : splitTexts(section.candidates);
+    const seen = new Set();
+    const candidates = entries.flatMap((raw, index) => {
+      const text = String(raw || '').trim();
+      if (!text) return [];
+      const bindings = candidateMontageBindings(section, index, raw);
+      const key = JSON.stringify({ text, bindings: bindings.map(({ id, ...binding }) => binding) });
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ text, ...(bindings.length ? { bindings } : {}) }];
+    });
+    const texts = candidates.map(candidate => candidate.text);
     const variants = section.candidateMode === 'files'
-      ? (texts.length === 1 ? [...new Set(section.paths || [])].map(file => ({ text: texts[0], paths: [file], assetIds: [] })) : [])
-      : texts.map(text => ({ text, paths: section.paths || [], assetIds: section.assetIds || [] }));
+      ? (texts.length === 1 ? [...new Set(section.paths || [])].map(file => ({ ...candidates[0], paths: [file], assetIds: [] })) : [])
+      : candidates.map(candidate => ({ ...candidate, paths: section.paths || [], assetIds: section.assetIds || [] }));
     return { ...section, texts, variants };
   });
 }

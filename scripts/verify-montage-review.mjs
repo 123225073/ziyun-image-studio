@@ -106,6 +106,7 @@ try {
   assert.match(await page.getByTestId('combination-count').innerText(), /2 × 2 = 4/);
   assert.equal(await page.getByTestId('candidates-A').locator('.candidate-entry').count(), 2, '内部换行不增加候选条数');
   await waitState(state => JSON.stringify(candidateCopy(state)) === JSON.stringify(originals));
+  assert.equal(await page.getByRole('button', { name: '开始混剪 · 4 条', exact: true }).isDisabled(), true, '校对前禁止配音');
   await reviewPanel().getByLabel('文案校对AI连接', { exact: true }).selectOption('local-review');
   await button('开始 AI 校对').click();
   await waitState(state => sessionItems(state).length === 4 && sessionItems(state).every(item => ['error', 'pass', 'issue'].includes(item.status)));
@@ -113,6 +114,7 @@ try {
   assert.equal(requests.length, 4, '全部组合逐条调用本地模型');
   assert.match(await reviewPanel().locator('.review-notice[role=status]').innerText(), /完成 3 条，1 条未完成/);
   assert.equal(await reviewPanel().locator('.review-item').count(), 2, '有问题筛选只显示两条问题组合');
+  assert.equal(await page.getByRole('button', { name: '开始混剪 · 4 条', exact: true }).isDisabled(), true, '有问题或校对失败不能配音');
   assert(requests.every(item => item.input.masterText === item.input.segments.map(segment => segment.text).join('\n')), '校对完整文案而非各段单独校对');
 
   await button('待复检 / 失败').click();
@@ -148,6 +150,7 @@ try {
   for (const item of rematched) assert.equal(state.montageReviews[0].items[item.index].accepted.masterText, item.text, '改写建议不能自动覆盖已采纳文案');
   await accept(2);
   state = await waitState(state => sessionItems(state).filter(item => item.accepted?.mode === 'rewrite' && item.status === 'unchecked').length === 2);
+  assert.equal(await page.getByRole('button', { name: '开始混剪 · 4 条', exact: true }).isDisabled(), true, '采纳改写后必须复校');
   const accepted = sessionItems(state).filter(item => item.accepted).map(item => ({ index: item.index, text: item.accepted.masterText, proposalId: item.accepted.proposalId }));
   assert(accepted.every(item => item.text.includes('因此，')));
   assert.deepEqual(candidateCopy(state), originals);

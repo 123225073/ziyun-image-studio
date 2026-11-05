@@ -1,16 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { batchChoices } from '../shared/montage-batch.mjs';
 import { montageReviewSignature, montageReviewCombination, montageReviewCapacity } from '../shared/montage-review.mjs';
+import { normalizeMontageBindings, validateMontageCandidateBindings } from '../shared/montage-bindings.mjs';
 
 const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const copy = value => structuredClone(value);
-export const reviewTextKey = combo => digest(combo.segments.map(segment => ({ section: segment.section, text: segment.text, paths: segment.paths || [], assetIds: segment.assetIds || [] })));
+export const reviewTextKey = combo => digest(combo.segments.map(segment => ({ section: segment.section, text: segment.text, paths: segment.paths || [], assetIds: segment.assetIds || [], bindings: segment.bindings || [] })));
 
 export function reviewSource(setup) {
   if (!setup || !Array.isArray(setup.sections) || setup.sections.length > 50 || JSON.stringify(setup).length > 500000) throw new Error('混剪校对配置无效。');
   const sections = setup.sections;
   if (sections.some(row => !row || typeof row !== 'object' || !['string', 'undefined'].includes(typeof row.section) || (row.paths != null && (!Array.isArray(row.paths) || row.paths.some(value => typeof value !== 'string'))) || (row.assetIds != null && (!Array.isArray(row.assetIds) || row.assetIds.some(value => typeof value !== 'string'))) || (Array.isArray(row.candidates) ? row.candidates.some(value => typeof value !== 'string') : !['string', 'undefined'].includes(typeof row.candidates)))) throw new Error('段落、候选文案或素材列表无效。');
   const capacity = montageReviewCapacity(setup);
+  validateMontageCandidateBindings(setup);
   if (!Number.isSafeInteger(capacity) || !capacity) throw new Error('请先填写要校对的候选文案。');
   const signature = montageReviewSignature(setup);
   return { sourceKey: digest(signature), signature, capacity };
@@ -102,7 +104,7 @@ export function parseMontageSuggestion(value, setup, combo, mode) {
       const rewritten = text(candidate.text, '段落文案', 16000);
       if (JSON.stringify(numberTokens(rewritten)) !== JSON.stringify(numberTokens(segment.text))) throw new Error('AI 改写改变了原文数字，建议已拒绝；原文案未改变。');
       if (rewritten.length > segment.text.length * 1.4 + 30 || retainedCharacters(segment.text, rewritten) < .65) throw new Error('AI 改动过大，超出轻度改写范围；原文案未改变。');
-      return { ...copy(segment), text: rewritten };
+      return { ...copy(segment), text: rewritten, ...(segment.bindings?.length && rewritten !== segment.text ? { bindings: segment.bindings.map(binding => ({ ...binding, start: 0, end: 0, quote: '', previousQuote: binding.quote || binding.previousQuote, status: 'needs-review', reason: '文案已改写，素材范围需要重新进行语义核对。' })) } : {}) };
     });
   }
   const masterText = segments.map(segment => segment.text).join('\n');
@@ -111,3 +113,36 @@ export function parseMontageSuggestion(value, setup, combo, mode) {
 }
 
 export { montageReviewCombination };
+
+const changedBindings = (original, proposal) => original.segments.flatMap((segment, segmentIndex) => segment.text === proposal.segments[segmentIndex].text ? [] : (segment.bindings || []).map(binding => ({ segmentIndex, binding, originalText: segment.text, rewrittenText: proposal.segments[segmentIndex].text })));
+
+export function montageBindingReviewRequest(original, proposal, evidence = []) {
+  const targets = changedBindings(original, proposal);
+  if (!targets.length) return null;
+  return {
+    systemPrompt: `${BASE} 这是改写后素材绑定的独立语义复核。逐条阅读原全文、改写全文、原绑定文字和 materialEvidence 中实际图片的视觉描述。目录名称只帮助识别，不是图片内容证据。每个目录的图片会被随机选取，必须全部图片都支持新文字表达的对象、事实与含义，特别检查否定、指代和主题改变；其中任一图片不适配或证据不完整，必须 unresolved。不可机械沿用原偏移，也不可凭文字相同就认定匹配。只有 evidenceComplete 且实际图片明确适配才重新定位新全文中的对应连续文字，返回 UTF-16 start/end 与逐字 quote；有重复文字必须根据上下文选择正确那次出现。不确定、原含义已删除或目录不适配时返回 unresolved，请用户处理。每个输入绑定必须返回且只能返回一项；不得更换目录。格式：{"bindingMatches":[{"segmentIndex":0,"bindingId":"原id","status":"matched或unresolved","start":0,"end":4,"quote":"新范围原文","reason":"引用实际图片内容说明判断依据"}]}。`,
+    prompt: boundedPrompt({ bindings: targets.map(({ segmentIndex, binding, originalText, rewrittenText }) => ({ segmentIndex, bindingId: binding.id, originalText, rewrittenText, originalQuote: binding.quote, originalStart: binding.start, originalEnd: binding.end, folderPath: binding.folderPath, folderLabel: binding.folderLabel || binding.folderPath })), materialEvidence: evidence.map(({ files, ...item }) => item) }),
+  };
+}
+
+export function applyMontageBindingReview(value, original, proposal, evidence = []) {
+  const parsed = jsonResult(value), targets = changedBindings(original, proposal);
+  if (!Array.isArray(parsed.bindingMatches) || parsed.bindingMatches.length !== targets.length) throw new Error('AI 素材绑定复核结果数量不正确，请手工确认。');
+  const keys = new Set();
+  const segments = copy(proposal.segments);
+  for (const match of parsed.bindingMatches) {
+    const key = `${match.segmentIndex}:${match.bindingId}`;
+    const target = targets.find(item => item.segmentIndex === match.segmentIndex && item.binding.id === match.bindingId);
+    if (!target || keys.has(key) || !['matched', 'unresolved'].includes(match.status)) throw new Error('AI 素材绑定复核引用无效，请手工确认。');
+    keys.add(key);
+    const reason = text(match.reason, '素材绑定复核原因');
+    const segment = segments[target.segmentIndex], index = segment.bindings.findIndex(binding => binding.id === target.binding.id);
+    const basis = evidence.find(item => item.folderPath === target.binding.folderPath);
+    const supported = basis?.evidenceComplete === true && basis.images?.length > 0 && basis.files?.length === basis.images.length;
+    segment.bindings[index] = match.status === 'matched' && supported
+      ? normalizeMontageBindings(segment.text, [{ ...target.binding, status: 'ready', start: match.start, end: match.end, quote: match.quote, reason, materialEvidence: { files: basis.files, checkedAt: new Date().toISOString() } }])[0]
+      : { ...segment.bindings[index], status: 'needs-review', reason: supported ? reason : basis?.reason || '没有实际图片内容依据，无法确认改写后的文字仍适配该素材。' };
+  }
+  for (const segment of segments) if (segment.bindings?.length) segment.bindings = normalizeMontageBindings(segment.text, segment.bindings, { allowPending: true });
+  return { ...proposal, segments };
+}

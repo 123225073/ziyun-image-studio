@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { StudioService } from '../electron/service.mjs';
 import { StudioStore } from '../electron/store.mjs';
 import { speechCacheKey } from '../shared/speech.mjs';
+import { withMontageReview, reviewAndPlan, reviewAndEnqueue } from './helpers/montage-review-fixture.mjs';
 
 const MP3 = Buffer.from('ID3valid-speech-test-fixture');
 const WAV = Buffer.alloc(48);
@@ -20,7 +21,7 @@ async function fixture(t, runner, settings = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ziyun-speech-service-')));
   const dataDir = path.join(root, 'data');
   const extra = { inspectAudio: async () => 2, ...settings };
-  let service = await StudioService.create({ dataDir, providerRunner: runner, ...extra });
+  let service = await StudioService.create({ dataDir, providerRunner: withMontageReview(runner), ...extra });
   t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
   await service.updateSettings({ providers: [provider], bindings: { tts: provider.id }, autoExport: false, defaultTemplateId: '' });
   return {
@@ -28,7 +29,7 @@ async function fixture(t, runner, settings = {}) {
     get service() { return service; },
     async restart(nextRunner = runner, nextSettings = {}) {
       await service.close();
-      service = await StudioService.create({ dataDir, providerRunner: nextRunner, ...extra, ...nextSettings });
+      service = await StudioService.create({ dataDir, providerRunner: withMontageReview(nextRunner), ...extra, ...nextSettings });
       return service;
     },
   };
@@ -73,7 +74,7 @@ test('undefined form fields preserve custom preset voice and speed in speech and
   assert.equal(configured.options.speed, 1.35);
   await assert.rejects(async () => f.service.speechConfiguration({ voicePresetId: 'custom-preset', providerId: 'other-provider' }), /不一致/);
   const asset = await addMontageAsset(f, { id: 'storage', description: '收纳箱折叠后更省空间的演示。' });
-  const plan = await f.service.planMontage({ assetIds: [asset.id], voicePresetId: 'custom-preset', voice: undefined, segments: [{ section: 'A', text }] });
+  const plan = await reviewAndPlan(f.service, { assetIds: [asset.id], voicePresetId: 'custom-preset', voice: undefined, segments: [{ section: 'A', text }] });
   assert.equal(plan.voiceOptions.voice, 'custom-cloned-voice');
   assert.equal(plan.voiceOptions.speed, 1.35);
   const [speech] = await f.service.enqueueSpeech({ text, voicePresetId: 'custom-preset', voice: undefined, speed: undefined });
@@ -112,7 +113,7 @@ test('successful standalone speech is reused by montage without a second synthes
   const [speech] = await f.service.enqueueSpeech({ text: '共享同一句文案。', ...options });
   await waitJobs(f.service, [speech.id], 'succeeded');
   const source = path.join(f.root, 'picture.png'); await fs.writeFile(source, Buffer.from('test-image'));
-  const montage = await f.service.enqueueMontage({ segments: [{ section: 'A', text: '共享同一句文案。', paths: [source] }], voiceOptions: options });
+  const montage = await reviewAndEnqueue(f.service, { segments: [{ section: 'A', text: '共享同一句文案。', paths: [source] }], voiceOptions: options });
   await waitJobs(f.service, [montage.id], 'succeeded');
   assert.equal(calls, 1);
 });
@@ -151,7 +152,7 @@ test('explicit montage regeneration recovers an unknown TTS submission with a fr
     },
   });
   const source = path.join(f.root, 'picture.png'); await fs.writeFile(source, Buffer.from('test-image'));
-  const job = await f.service.enqueueMontage({ segments: [{ section: 'A', text: '混剪配音结果未知。', paths: [source] }], voiceOptions: options });
+  const job = await reviewAndEnqueue(f.service, { segments: [{ section: 'A', text: '混剪配音结果未知。', paths: [source] }], voiceOptions: options });
   await waitJobs(f.service, [job.id], 'unknown');
   await assert.rejects(f.service.retryJobs([job.id]), /状态未知/);
   const [retry] = await f.service.retryJobs([job.id], { regenerate: true });
@@ -269,7 +270,7 @@ test('automatic montage library IDs never become manual overrides for unrelated 
     return { bytes: MP3, mime: 'audio/mpeg', duration: 2 };
   });
   const asset = await addMontageAsset(f, { id: 'storage', description: '透明收纳箱折叠动作特写。' });
-  const plan = await f.service.planMontage({
+  const plan = await reviewAndPlan(f.service, {
     assetIds: [asset.id], voiceOptions: options,
     segments: [{ section: 'A', text: '人工智能算法全面升级。', assetIds: [asset.id] }],
   });
@@ -293,13 +294,13 @@ test('semantic montage matching handles paraphrases using real shot IDs and disc
   });
   await f.service.updateSettings({ providers: [provider, visionProvider], bindings: { montageVision: 'vision' } });
   const asset = await addMontageAsset(f, { id: 'umbrella', description: '成年人手持晴雨伞走出建筑。', shotIds: ['umbrella-shot'] });
-  const plan = await f.service.planMontage({ assetIds: [asset.id], voiceOptions: options, segments: [{ section: 'A', text: narration }] });
+  const plan = await reviewAndPlan(f.service, { assetIds: [asset.id], voiceOptions: options, segments: [{ section: 'A', text: narration }] });
   assert.deepEqual(plan.semanticMatches[0].shotIds, ['umbrella-shot']);
   assert.equal(plan.missing.length, 0);
   assert.equal(plan.segments[0].shots[0].id, 'umbrella-shot');
   assert.equal(plan.segments[0].shots[0].path, asset.path);
   assert.match(plan.segments[0].shots[0].reason, /句意推荐/);
-  const noRealMatch = await f.service.planMontage({ assetIds: [asset.id], voiceOptions: options, segments: [{ section: 'A', text: secondNarration }] });
+  const noRealMatch = await reviewAndPlan(f.service, { assetIds: [asset.id], voiceOptions: options, segments: [{ section: 'A', text: secondNarration }] });
   assert.deepEqual(noRealMatch.semanticMatches[0].shotIds, []);
   assert.deepEqual(noRealMatch.segments[0].shots, []);
   assert.equal(noRealMatch.missing.length, 1);
@@ -317,18 +318,18 @@ test('montage variants and restart reuse paid speech and semantic matches while 
   await f.service.updateSettings({ providers: [provider, visionProvider], bindings: { montageVision: 'vision' } });
   const asset = await addMontageAsset(f, { id: 'umbrella', description: '成年人手持晴雨伞走出建筑。', shotIds: ['umbrella-one', 'umbrella-two'] });
   const config = { assetIds: [asset.id], voiceOptions: options, segments: [{ section: 'A', text }] };
-  const first = await f.service.planMontage({ ...config, variant: 0 });
-  const second = await f.service.planMontage({ ...config, variant: 1 });
+  const first = await reviewAndPlan(f.service, { ...config, variant: 0 });
+  const second = await reviewAndPlan(f.service, { ...config, variant: 1 });
   assert.equal(first.missing.length, 0);
   assert.equal(second.missing.length, 0);
   assert.notEqual(first.signature, second.signature);
   assert.equal(speechCalls, 1);
   assert.equal(planCalls, 1);
   await f.restart();
-  await f.service.planMontage({ ...config, variant: 2 });
+  await reviewAndPlan(f.service, { ...config, variant: 2 });
   assert.equal(speechCalls, 1);
   assert.equal(planCalls, 1);
-  await assert.rejects(f.service.planMontage({ ...config, assetIds: [], segments: [{ section: 'A', text }] }), /请先选择/);
+  await assert.rejects(reviewAndPlan(f.service, { ...config, assetIds: [], segments: [{ section: 'A', text }] }), /请先选择/);
   assert.equal(speechCalls, 1);
   assert.equal(planCalls, 1);
 });

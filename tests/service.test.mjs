@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { StudioService } from '../electron/service.mjs';
 import { StudioStore } from '../electron/store.mjs';
+import { withMontageReview, reviewAndEnqueue } from './helpers/montage-review-fixture.mjs';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypmp42'), Buffer.alloc(20)]);
@@ -14,7 +15,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function fixture(t, runner, extra = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ziyun-service-')));
   const dataDir = path.join(root, 'data');
-  const service = await StudioService.create({ dataDir, providerRunner: runner, ...extra });
+  const service = await StudioService.create({ dataDir, providerRunner: withMontageReview(runner), ...extra });
   t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
   await service.updateSettings({ providers: [provider], bindings: { image: 'fake', vision: 'fake', video: 'fake', tts: 'fake' }, autoExport: false, defaultTemplateId: '' });
   return { root, dataDir, service };
@@ -336,7 +337,7 @@ test('合成阶段失败重试复用已付费 TTS 和 renderer 检查点，不�
     },
   });
   const source = path.join(root, 'photo.png'); await fs.writeFile(source, PNG);
-  const job = await service.enqueueMontage({ name: '真实合成', voice: 'alloy', segments: [{ text: '产品介绍', paths: [source] }] });
+  const job = await reviewAndEnqueue(service, { name: '真实合成', voice: 'alloy', segments: [{ text: '产品介绍', paths: [source] }] });
   await waitFor(service, state => state.jobs[0]?.status === 'failed');
   await service.retryJobs([job.id]);
   const state = await waitFor(service, state => state.jobs.length === 2 && state.jobs[1].status === 'succeeded');
@@ -355,7 +356,7 @@ test('关闭不合作的合成器有界等待；重启安全恢复合成且复�
     },
   });
   const source = path.join(root, 'photo.png'); await fs.writeFile(source, PNG);
-  await service.enqueueMontage({ segments: [{ text: '安全恢复', paths: [source] }] }); await ready;
+  await reviewAndEnqueue(service, { segments: [{ text: '安全恢复', paths: [source] }] }); await ready;
   const started = Date.now(); await service.close(); assert.ok(Date.now() - started < 2500);
   const restored = await StudioService.create({ dataDir, providerRunner: async () => { ttsCalls++; throw new Error('不应重复配音'); }, renderRunner: async (config, context) => {
     assert.equal(context.checkpoint.phase, 'rendering');

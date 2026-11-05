@@ -4,10 +4,21 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { StudioService } from '../electron/service.mjs';
-import { scanImageFolderImport, inspectImageTypeFolder } from '../electron/image-folder-import.mjs';
+import { scanImageFolderImport, inspectImageTypeFolder, inspectImageOutputFolder, validateImageFolderMapping } from '../electron/image-folder-import.mjs';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 const provider = { id: 'local', name: '隔离测试', protocol: 'openai-images', baseUrl: 'http://127.0.0.1:1', model: 'fixture' };
+test('multi-file drops stay image references and over-limit batches create no partial jobs', async t => {
+  const { root, service } = await fixture(t);
+  const paths = [];
+  for (let index = 0; index < 17; index++) { const file = path.join(root, `${index}.png`); await fs.writeFile(file, PNG); paths.push(file); }
+  assert.deepEqual(await service.prepareReferenceDrop(paths.slice(0, 2)), { sourcePaths: paths.slice(0, 2), sourceMode: 'single' });
+  const valid = await service.saveRow({ name: '正常行', userPrompt: '保持构图', referenceMode: 'all', sourcePaths: [paths[0]] });
+  const invalid = await service.saveRow({ name: '超限行', userPrompt: '保持构图', referenceMode: 'all', sourcePaths: paths });
+  await assert.rejects(service.enqueueImages([valid.id, invalid.id]), /最多 16/);
+  assert.equal(service.state.jobs.length, 0);
+  assert.equal(service.state.rows[0].imageBatch, null);
+});
 async function fixture(t, runner = async () => ({ images: [{ bytes: PNG }] })) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ziyun-folder-')));
   const sourceRoot = path.join(root, '素材根目录'); await fs.mkdir(sourceRoot);
@@ -48,19 +59,20 @@ test('扫描只读取直接母图，目录编号解析且预览不创建子图�
   assert.deepEqual(await fs.readdir(path.join(a, '子图')), ['已有结果.png']);
 });
 
-test('零图、多图无唯一母图、多张母图、无效图片及输出同名文件均逐行拒绝', async t => {
+test('多母图和未命名多图可一起使用，零图、无效图片、冲突输出与超过16张逐行拒绝', async t => {
   const { sourceRoot } = await fixture(t);
   await typeFolder(sourceRoot, 'A01-只有子图', [], true);
   await typeFolder(sourceRoot, 'A02-多图', ['甲.png', '乙.jpg']);
   await typeFolder(sourceRoot, 'A03-两个母图', ['母图.png', '母图.jpg']);
   const invalid = await typeFolder(sourceRoot, 'A04-伪图片'); await fs.writeFile(path.join(invalid, '母图.png'), 'not an image');
   const blocked = await typeFolder(sourceRoot, 'A05-目录冲突'); await fs.writeFile(path.join(blocked, '子图'), 'preserve');
+  await typeFolder(sourceRoot, 'A06-太多母图', Array.from({length:17},(_,i)=>`母图${i+1}.png`));
   const plan = await scanImageFolderImport(sourceRoot);
-  assert.equal(plan.invalidCount, 5); assert(plan.rows.every(row => row.errors.length));
+  assert.equal(plan.invalidCount, 4); assert.equal(plan.validCount, 2);
   assert.match(plan.rows[0].errors.join(), /子图目录不会/);
-  assert.match(plan.rows[1].errors.join(), /没有唯一/);
-  assert.match(plan.rows[2].errors.join(), /多张名为/);
+  for(const row of plan.rows.slice(1,3)){assert.equal(row.motherPaths.length,2);assert.deepEqual(row.values.sourcePaths,row.motherPaths);assert.equal(row.values.referenceMode,'all');assert.equal(row.values.folderName,row.outputPath)}
   assert.match(plan.rows[3].errors.join(), /不是有效图片/);
+  assert.match(plan.rows[5].errors.join(), /最多.*16/);
   assert.equal(await fs.readFile(path.join(blocked, '子图'), 'utf8'), 'preserve');
 });
 
@@ -73,7 +85,9 @@ test('可信导入幂等且持久化，普通保存不能注入或改写原目�
   const row = service.state.rows[0]; assert.equal(row.outputMode, 'source-children');
   await service.saveRow({ ...row, name: '改名', count: 3, outputMode: '', sourceFolder: path.join(sourceRoot, 'fake') });
   assert.equal(service.state.rows[0].sourceFolder, folder); assert.equal(service.state.rows[0].count, 3);
-  await assert.rejects(service.saveRow({ ...row, sourcePaths: [path.join(folder, '子图', 'fake.png')] }), /参考来源已绑定/);
+  const replacement=path.join(sourceRoot,'替换参考.png');await fs.writeFile(replacement,PNG);
+  await service.saveRow({ ...service.state.rows[0], sourcePaths: [replacement] });
+  assert.deepEqual(service.state.rows[0].sourcePaths,[replacement]);assert.equal(service.state.rows[0].sourceFolder,folder);assert.equal(service.state.rows[0].folderName,path.join(folder,'子图'));
   const ordinary = await service.saveRow({ code: 'B01', outputMode: 'source-children', sourceRoot, sourceFolder: folder, motherPath: row.motherPath });
   assert.equal(ordinary.outputMode, undefined);
   const again = await scanImageFolderImport(sourceRoot, { existingRows: service.state.rows }); assert.equal(again.invalidCount, 1);
@@ -81,6 +95,31 @@ test('可信导入幂等且持久化，普通保存不能注入或改写原目�
   const restored = await StudioService.create({ dataDir });
   assert.equal(restored.state.rows[0].sourceFolder, folder); assert.deepEqual(await restored.importImageFolderBatch('directory-preview', []), imported);
   await restored.close();
+});
+
+test('输出定位可独立选择无母图目录或现有子图，旧映射也不依赖后来替换的参考',async t=>{
+  const {sourceRoot}=await fixture(t),folder=await typeFolder(sourceRoot,'A01-保存位置',[],true);
+  const mapping=await inspectImageOutputFolder(folder);
+  assert.equal(mapping.sourceFolder,folder);assert.equal(mapping.outputPath,path.join(folder,'子图'));
+  assert.deepEqual(await inspectImageOutputFolder(path.join(folder,'子图')),mapping);
+  assert.equal(await validateImageFolderMapping({...mapping,motherPath:path.join(folder,'已移走母图.png'),sourceMode:'folder',sourcePaths:[path.join(sourceRoot,'新参考.png')]}),mapping.outputPath);
+  assert.deepEqual(await fs.readdir(path.join(folder,'子图')),['已有结果.png']);
+});
+
+test('母图系列全部传给每次生成，改参考保留独立输出且已保存旧任务不漂移',async t=>{
+  const references=[];
+  const {sourceRoot,service}=await fixture(t,async(operation,payload)=>{references.push([...payload.referencePaths]);return {images:[{bytes:PNG}]}});
+  const folder=await typeFolder(sourceRoot,'A01-多母图',['母图.png','母图2.jpg','母图_3.png','母图 (4).png','旁边.png'],true);
+  const result=await importRoot(service,sourceRoot),row=service.state.rows[0];
+  assert.equal(row.sourcePaths.length,4);assert.equal(row.referenceMode,'all');assert.equal(row.folderName,path.join(folder,'子图'));
+  await service.saveRow({...row,count:2,userPrompt:'所有参考一起处理'});
+  const jobs=await service.enqueueImages(result.importedIds);await service.setPaused(false);
+  await waitFor(service,state=>state.jobs.every(job=>job.status==='succeeded'));
+  assert.equal(references.length,2);assert(references.every(refs=>JSON.stringify(refs)===JSON.stringify(row.sourcePaths)));
+  const replacement=path.join(sourceRoot,'新参考.png');await fs.writeFile(replacement,PNG);
+  await service.saveRow({...service.state.rows[0],sourceMode:'single',sourcePaths:[replacement]});
+  const exported=await service.exportJobs(jobs.map(job=>job.id));assert(exported.every(item=>path.dirname(item.path)===path.join(folder,'子图')));
+  assert.deepEqual(service.state.jobs[0].snapshot.row.sourcePaths,row.sourcePaths);
 });
 
 test('自动导出无全局目录仍回各自子图，保留母图及同名旧文件，重复导出不新增副本', async t => {

@@ -16,8 +16,8 @@ await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-f','lavfi','-i'
 for(const [folder,color]of [[A,'red'],[B,'blue']])await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-f','lavfi','-i',`color=c=${color}:s=160x240`,'-frames:v','1',path.join(folder,'画面.png')]);
 await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','color=c=green:s=160x240:d=0.6','-f','lavfi','-i','sine=frequency=220:duration=0.6','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',opening]);
 await runMedia(ffmpeg,['-hide_banner','-loglevel','error','-y','-i',voice,'-c:a','libmp3lame',path.join(fixture,'voice.mp3')]);
-const wav=await fs.readFile(path.join(fixture,'voice.mp3')),requests=[];
-const server=http.createServer(async(req,res)=>{let text='';for await(const part of req)text+=part;if(req.url==='/audio/speech'||req.url==='/v1/audio/speech'){const body=JSON.parse(text);requests.push(body.input);res.writeHead(200,{'Content-Type':'audio/mpeg'});res.end(wav)}else{res.writeHead(404);res.end()}});
+const wav=await fs.readFile(path.join(fixture,'voice.mp3')),requests=[],reviewRequests=[];
+const server=http.createServer(async(req,res)=>{let text='';for await(const part of req)text+=part;if(req.url==='/audio/speech'||req.url==='/v1/audio/speech'){const body=JSON.parse(text);requests.push(body.input);res.writeHead(200,{'Content-Type':'audio/mpeg'});res.end(wav)}else if(req.url==='/v1/chat/completions'){const body=JSON.parse(text);const input=JSON.parse(body.messages.find(message=>message.role==='user').content);reviewRequests.push(input);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{role:'assistant',content:JSON.stringify({status:'pass',summary:'本地验收：完整文案衔接正常。',issues:[]})}}]}))}else{res.writeHead(404);res.end()}});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const baseUrl=`http://127.0.0.1:${server.address().port}/v1`;
 const env={...process.env,ZIYUN_DATA_DIR:dataDir,ZIYUN_SMOKE:'1'};delete env.ELECTRON_RUN_AS_NODE;
@@ -62,10 +62,11 @@ try{
  await page.evaluate(()=>{const dataTransfer=new DataTransfer();for(const file of document.querySelector('#native-drop-fixture').files)dataTransfer.items.add(file);const zone=document.querySelector('.source-dropzone');zone.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer}));zone.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer}));});
  await page.waitForFunction(()=>document.querySelector('.reference-thumb span')?.textContent==='2 张');
  await page.getByRole('button',{name:'保存本行',exact:true}).click();await wait(state=>state.rows.find(row=>row.id==='r3').sourcePaths.length===2,5000);
- const dropped=(await call('getState')).rows.find(row=>row.id==='r3');assert.equal(dropped.userPrompt,'尚未保存的第三行要求');assert.equal(dropped.code,'A01');assert.equal(dropped.count,3);assert.equal(dropped.sourceMode,'folder');
+ const dropped=(await call('getState')).rows.find(row=>row.id==='r3');assert.equal(dropped.userPrompt,'尚未保存的第三行要求');assert.equal(dropped.code,'A01');assert.equal(dropped.count,3);assert.equal(dropped.sourceMode,'single');assert.equal(dropped.referenceMode,'all');
  await page.screenshot({path:path.join(fixture,'row-order.png')});
  await call('saveProvider',{id:'test-voice',name:'本机验收语音',protocol:'openai-tts',baseUrl,model:'tts-1',key:'isolated-test-key'});
- await call('updateSettings',{bindings:{tts:'test-voice'},autoExport:false});
+ await call('saveProvider',{id:'test-review',name:'本机验收文案校对',protocol:'openai-chat',baseUrl,model:'fixture-review',key:'isolated-test-key'});
+ await call('updateSettings',{bindings:{tts:'test-voice',rewrite:'test-review'},autoExport:false});
  await page.getByRole('button',{name:'03 混剪成片',exact:true}).click();
  await fillCandidates('A','开场一。\n开场二。\n开场三。\n开场四。');
  await fillCandidates('B','内容一。\n内容二。\n内容三。');
@@ -84,6 +85,11 @@ try{
  await page.getByRole('button',{name:'下一页',exact:true}).click();assert.equal(await page.locator('.batch-copy-preview>div').count(),2);await page.getByRole('button',{name:'上一页',exact:true}).click();
  await select(opening);await page.getByRole('button',{name:'添加开头视频（可选）',exact:true}).click();
  await page.locator('.montage-workspace').evaluate(element=>element.scrollTop=0);await page.screenshot({path:path.join(fixture,'batch-setup.png')});
+ assert.equal(await page.getByRole('button',{name:'开始混剪 · 12 条',exact:true}).isDisabled(),true,'全文未通过校对前不得生成配音');
+ await page.getByRole('button',{name:'开始 AI 校对',exact:true}).click();
+ await wait(state=>Object.values(state.montageReviews?.at(-1)?.items||{}).filter(item=>item.status==='pass').length===12,20000);
+ await page.locator('.review-progress').waitFor({state:'hidden'});
+ assert.equal(reviewRequests.length,12);assert.equal(requests.length,0,'校对期间没有配音请求');assert(reviewRequests.every(input=>input.masterText===input.segments.map(segment=>segment.text).join('\n')));
  await page.getByRole('button',{name:'开始混剪 · 12 条',exact:true}).click();
  await page.waitForFunction(()=>!document.querySelector('.batch-progress'),{},{timeout:120000});
  assert.equal(await page.locator('.batch-failures').count(),0,await page.locator('.batch-failures').allTextContents());
@@ -122,6 +128,6 @@ try{
  await page.getByRole('button',{name:'03 混剪成片',exact:true}).click();assert.equal(await page.getByLabel('A 段候选文案 1',{exact:true}).inputValue(),'开场一。');assert.equal(await page.getByTestId('candidates-A').locator('.candidate-entry').count(),4);
  await page.setViewportSize({width:1050,height:800});assert(await page.locator('.main-nav').evaluate(element=>element.scrollWidth<=element.clientWidth));
  assert.deepEqual(errors,[]);
- await fs.writeFile(path.join(fixture,'result.json'),JSON.stringify({passed:true,providerCalls:requests.length,drafts:restored.montageDrafts.length,draftDirectory:exportedDir,rendered:job.localPath,duration:await mediaDuration(ffmpeg,job.localPath),errors},null,2));
+ await fs.writeFile(path.join(fixture,'result.json'),JSON.stringify({passed:true,providerCalls:requests.length,reviewCalls:reviewRequests.length,drafts:restored.montageDrafts.length,draftDirectory:exportedDir,rendered:job.localPath,duration:await mediaDuration(ffmpeg,job.localPath),errors},null,2));
  console.log(`BATCH_UI_PASS ${fixture}`);
 }catch(error){if(page&&!page.isClosed()){await page.screenshot({path:path.join(fixture,'failure.png')}).catch(()=>{});await fs.writeFile(path.join(fixture,'failure.json'),JSON.stringify({message:error.message,state:await call('getState')},null,2)).catch(()=>{});}throw error;}finally{await close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve))}

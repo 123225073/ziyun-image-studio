@@ -1,17 +1,15 @@
 name: Release current Windows and macOS
 on:
-  push:
-    tags: ['v0.4.*']
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing version tag to build and publish
+        description: Existing version tag with a locally verified Windows installer in its draft release
         required: true
-        default: v0.4.1
+        default: v0.5.0
 permissions:
   contents: read
 concurrency:
-  group: release-${{ inputs.release_tag || github.ref_name }}
+  group: release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -27,16 +25,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || format('refs/tags/{0}', github.ref_name) }}
+          ref: refs/tags/${{ inputs.release_tag }}
           fetch-depth: 0
       - name: Verify tagged application inputs
         shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          # A manual validation replay may update tests, never the application being released.
-          git diff --exit-code "refs/tags/$RELEASE_TAG" HEAD -- electron shared src package.json package-lock.json vite.config.js index.html runtime
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=$(node -p 'require("./package.json").version')
+          test "$RELEASE_TAG" = "v$version"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test -s ".github/local-windows-$RELEASE_TAG.json"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -64,7 +65,9 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path -LiteralPath runtime/ffmpeg.exe) { throw 'Public installers use separately installed FFmpeg.' }
-          npm run package -- --publish never
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $installer = (Resolve-Path -LiteralPath "release/$version/ZiyunStudio-Setup-$version.exe").Path
@@ -79,7 +82,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm run package:mac -- --${{ matrix.arch }}
+          npm run build
+          node node_modules/electron-builder/out/cli/cli.js --mac dmg --${{ matrix.arch }} --publish never
           version=$(node -p 'require("./package.json").version')
           app=$(find "release/$version" -name '子云影像工坊.app' -type d -print -quit)
           test -n "$app"
@@ -113,6 +117,15 @@ jobs:
       - name: Installed AI review and approval flow
         timeout-minutes: 6
         run: node scripts/verify-montage-review.mjs
+      - name: Installed model selection and connection names
+        timeout-minutes: 6
+        run: node scripts/verify-model-settings.mjs
+      - name: Installed native dialog path persistence
+        timeout-minutes: 4
+        run: node scripts/verify-dialog-paths.mjs
+      - name: Installed text bindings and image-aware review
+        timeout-minutes: 8
+        run: node scripts/verify-montage-bindings.mjs
       - name: Installed timeline save and export edit lock
         timeout-minutes: 4
         run: node scripts/verify-timeline-working.mjs
@@ -142,17 +155,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+          ref: refs/tags/${{ inputs.release_tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: installer-*
           path: assets
           merge-multiple: true
-      - name: Publish all platforms after verification
+      - name: Verify local Windows package and publish all platforms
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -160,20 +173,60 @@ jobs:
           test "$RELEASE_TAG" = "v$version"
           names=("ZiyunStudio-Setup-$version.exe" "ZiyunStudio-$version-mac-arm64.dmg" "ZiyunStudio-$version-mac-x64.dmg")
           for name in "${names[@]}"; do test -s "assets/$name"; done
+
+          # The draft and Windows asset must have been prepared only after the
+          # local installer passed installation checks. Never create a substitute.
+          gh release view "$RELEASE_TAG" --json isDraft,tagName > existing.json
+          jq -e --arg tag "$RELEASE_TAG" '.isDraft == true and .tagName == $tag' existing.json
+          mkdir local-windows
+          gh release download "$RELEASE_TAG" --pattern "${names[0]}" --dir local-windows
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import assert from 'node:assert/strict';
+          const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          const receipt = JSON.parse(fs.readFileSync(`.github/local-windows-${process.env.RELEASE_TAG}.json`, 'utf8'));
+          const fileName = `ZiyunStudio-Setup-${version}.exe`;
+          assert.equal(receipt.version, version, 'Local Windows receipt version differs from the tag');
+          assert.equal(receipt.fileName, fileName, 'Local Windows receipt names a different installer');
+          assert.ok(Number.isSafeInteger(receipt.size) && receipt.size > 0, 'Invalid installer size in local receipt');
+          assert.match(receipt.sha256, /^[a-fA-F0-9]{64}$/, 'Invalid SHA256 in local receipt');
+          const bytes = fs.readFileSync(`local-windows/${fileName}`);
+          assert.equal(bytes.length, receipt.size, 'Draft Windows installer size differs from the locally verified package');
+          assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), receipt.sha256.toLowerCase(), 'Draft Windows installer differs from the locally verified package');
+          fs.copyFileSync(`local-windows/${fileName}`, `assets/${fileName}`);
+          console.log(`Using locally verified Windows installer: ${fileName} (${bytes.length} bytes)`);
+          NODE
           (cd assets && sha256sum "${names[@]}" > SHA256SUMS.txt)
-          if gh release view "$RELEASE_TAG" --json isDraft > existing.json 2>/dev/null; then
-            test "$(jq -r .isDraft existing.json)" = true
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "子云影像工坊 $RELEASE_TAG · Windows / Mac" --notes-file ".github/release-$RELEASE_TAG.md"
-          fi
-          gh release upload "$RELEASE_TAG" assets/* --clobber
+          # Preserve the original local Windows attachment. Only the two tested
+          # macOS packages and the final checksum file are uploaded by CI.
+          gh release upload "$RELEASE_TAG" "assets/${names[1]}" "assets/${names[2]}" assets/SHA256SUMS.txt --clobber
           mkdir verify-download
           gh release download "$RELEASE_TAG" -D verify-download
           (cd verify-download && sha256sum --check --strict SHA256SUMS.txt)
-          gh release view "$RELEASE_TAG" --json assets > uploaded.json
-          for name in "${names[@]}" SHA256SUMS.txt; do
-            bytes=$(wc -c < "assets/$name")
-            digest=$(sha256sum "assets/$name" | cut -d' ' -f1)
-            jq -e --arg name "$name" --argjson bytes "$bytes" --arg digest "sha256:$digest" '.assets | any(.name==$name and .size==$bytes and .digest==$digest and .state=="uploaded")' uploaded.json
-          done
+          gh release view "$RELEASE_TAG" --json isDraft,tagName,assets > uploaded.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import assert from 'node:assert/strict';
+          const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          const names = [`ZiyunStudio-Setup-${version}.exe`, `ZiyunStudio-${version}-mac-arm64.dmg`, `ZiyunStudio-${version}-mac-x64.dmg`, 'SHA256SUMS.txt'];
+          const release = JSON.parse(fs.readFileSync('uploaded.json', 'utf8'));
+          assert.equal(release.isDraft, true, 'Release became public before verification finished');
+          assert.equal(release.tagName, process.env.RELEASE_TAG);
+          assert.deepEqual(release.assets.map(asset => asset.name).sort(), [...names].sort(), 'Draft has missing, duplicate, or unverified extra attachments');
+          assert.deepEqual(fs.readdirSync('verify-download').sort(), [...names].sort(), 'Did not download the exact complete release');
+          const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+          for (const name of names) {
+            const original = fs.readFileSync(`assets/${name}`);
+            const downloaded = fs.readFileSync(`verify-download/${name}`);
+            const asset = release.assets.find(asset => asset.name === name);
+            assert.equal(downloaded.length, original.length, `${name}: downloaded size differs`);
+            assert.equal(digest(downloaded), digest(original), `${name}: downloaded content differs`);
+            assert.equal(asset.size, original.length, `${name}: GitHub size differs`);
+            assert.equal(asset.digest, `sha256:${digest(original)}`, `${name}: GitHub digest differs`);
+            assert.equal(asset.state, 'uploaded', `${name}: GitHub upload is incomplete`);
+            console.log(`Verified remote attachment: ${name} (${original.length} bytes, ${digest(original)})`);
+          }
+          NODE
           gh release edit "$RELEASE_TAG" --draft=false --latest

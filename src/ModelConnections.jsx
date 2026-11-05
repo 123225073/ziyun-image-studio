@@ -49,7 +49,7 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
     const selected = MODEL_PLATFORMS.find(item => item.id === id);
     setPlatformId(id);
     // New platform = new empty credential fields; never carry a key across sites.
-    setDraft(current => platformDraft(selected, current.id));
+    setDraft(current => ({ ...platformDraft(selected, current.id), ...(current.name.trim() && current.name !== platform?.label ? { name: current.name } : {}) }));
   };
   const fetchModels = () => run(async () => {
     const snapshot = draft;
@@ -59,7 +59,7 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
       const result = await call('fetchProviderModels', snapshot);
       if (!result.models?.length) throw new Error('平台没有返回模型，请核对服务地址和密钥。');
       setDraft(current => current && ['id', 'protocol', 'baseUrl', 'key'].every(key => current[key] === snapshot[key])
-        ? { ...current, models: result.models, model: current.model || result.models[0], catalog: result.catalog } : current);
+        ? { ...current, models: result.models, catalog: result.catalog } : current);
     } finally { setFetching(false); }
   });
   const save = () => run(async () => {
@@ -112,14 +112,14 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
     {groupId === 'video' && renderAccount}
     {draft && <Dialog title={editing ? '编辑模型服务' : `添加${group.label}服务`} onClose={() => !saving && setDraft(null)}>
       <div className="modal-form">
+        <Field label="配置名称" hint="给这个连接起一个容易辨认的名称"><input aria-label="连接名称" value={draft.name} placeholder="例如：图片生成主服务" onChange={event => patch('name', event.target.value)}/></Field>
         <Field label="服务平台"><select aria-label="服务平台" value={platformId} disabled={editing || saving || fetching} onChange={event => switchPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
         <div className="platform-guide"><strong>① 在平台开通服务并获取密钥</strong><ProviderHelp provider={draft} call={call} run={run}/><p>{platform?.custom ? '使用 CPA、Fengsha 等服务时，填写该平台提供的服务地址和密钥。支持标准 OpenAI 兼容接口。' : '下方入口在浏览器中打开。请使用同一平台账号的密钥，账号有余额且已开通对应服务后才能生成。'}</p>{draft.protocol.startsWith('minimax-') && <p>当前服务地址：{draft.baseUrl}。国内与国际账号的密钥不通用，可在高级设置中核对地址。</p>}</div>
         {platform?.custom && <Field label="服务地址" hint="由你购买服务的平台提供"><input aria-label="接口基础地址" placeholder="https://你的服务地址/v1" value={draft.baseUrl} onChange={event => setDraft({ ...draft, baseUrl: event.target.value, models: [] })}/></Field>}
         <Field label="② 粘贴 API Key" hint={draft.hasKey ? '已保存，留空保持不变' : '仅在本机加密保存'}><input aria-label="API Key" type="password" autoComplete="new-password" value={draft.key} placeholder={draft.hasKey ? '留空保留已保存密钥' : '粘贴平台提供的密钥'} onChange={event => patch('key', event.target.value)}/></Field>
         <Field label="③ 选择模型" hint={draft.catalog || platform?.models?.length ? '平台预设目录，实际可用性取决于账号权限' : '可从平台读取，也可手工填写'}><div className="model-picker"><input aria-label="模型名称" list="provider-model-options" value={draft.model} placeholder="获取后选择，或填写平台提供的模型名" onChange={event => patch('model', event.target.value)}/><datalist id="provider-model-options">{[...new Set([...(draft.models || []), ...(platform?.models || [])])].map(model => <option key={model} value={model}/>)}</datalist><Button disabled={fetching || saving} onClick={fetchModels}><ArrowsClockwise size={17}/>{fetching ? '读取中…' : '获取模型'}</Button></div></Field>
         {draft.protocol === 'doubao-tts' && <Field label="豆包资源 ID" hint="开通服务时获得，需与音色版本一致"><input aria-label="豆包资源 ID" value={draft.resourceId || ''} onChange={event => patch('resourceId', event.target.value)}/></Field>}
-        <details className="model-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}><summary>高级设置 · 名称、服务地址与等待时间</summary><div>
-          <Field label="显示名称" hint="可用默认名称"><input aria-label="连接名称" value={draft.name} onChange={event => patch('name', event.target.value)}/></Field>
+        <details className="model-advanced" open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)}><summary>高级设置 · 服务地址与等待时间</summary><div>
           {!platform?.custom && <Field label="服务地址" hint="平台已自动填写；已有任务的连接修改地址需另建服务"><input aria-label="接口基础地址" value={draft.baseUrl} onChange={event => patch('baseUrl', event.target.value)}/></Field>}
           <Field label="最长等待时间（秒）"><input aria-label="请求超时秒数" type="number" min="1" max="3600" value={draft.timeoutMs / 1000} onChange={event => patch('timeoutMs', +event.target.value * 1000)}/></Field>
           {draft.protocol === 'oairegbox-video' && <><Field label="账号访问令牌（可选）" hint="用于余额和消费记录，不是 API 调用令牌"><input aria-label="OAIREGBOX 账号访问令牌" type="password" autoComplete="new-password" value={draft.accountToken || ''} disabled={draft.clearAccountToken} placeholder={draft.hasAccountToken ? '已保存，留空保留' : '在上方“账号访问令牌”入口获取'} onChange={event => patch('accountToken', event.target.value)}/></Field>{draft.hasAccountToken && <label className="inline-check"><input type="checkbox" checked={Boolean(draft.clearAccountToken)} onChange={event => patch('clearAccountToken', event.target.checked)}/>移除已保存的账号访问令牌</label>}</>}
