@@ -100,7 +100,8 @@ test('127 个独立槽位和并行的两批提交共享默认全局 10 并发', 
   const b = await service.saveRow({ name: '批次B', userPrompt: '画蓝色产品', count: 64 });
   const results = await Promise.all([service.enqueueImages([a.id]), service.enqueueImages([b.id]), service.enqueueImages([a.id])]);
   assert.equal(results[2].length, 0);
-  const state = await waitFor(service, state => state.jobs.length === 127 && state.jobs.every(job => job.status === 'succeeded'), 25000);
+  // This exercises durable SQLite and image writes; hosted Windows disk latency is not a performance assertion.
+  const state = await waitFor(service, state => state.jobs.length === 127 && state.jobs.every(job => job.status === 'succeeded'), 120000);
   assert.equal(calls, 127); assert.ok(maximum <= 10); assert.equal(maximum, 10);
   assert.equal(new Set(state.jobs.map(job => `${job.rowId}:${job.slot}`)).size, 127);
   assert.equal(new Set(state.jobs.map(job => job.localPath)).size, 127);

@@ -6,11 +6,11 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.0/ZiyunStudio-Setup-0.4.0.exe) |
-| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.0/ZiyunStudio-0.4.0-mac-arm64.dmg) |
-| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.0/ZiyunStudio-0.4.0-mac-x64.dmg) |
+| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.1/ZiyunStudio-Setup-0.4.1.exe) |
+| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.1/ZiyunStudio-0.4.1-mac-arm64.dmg) |
+| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.1/ZiyunStudio-0.4.1-mac-x64.dmg) |
 
-[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.0/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.4.0.zip)
+[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.4.1/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.4.1.zip)
 
 ## 功能
 
@@ -22,7 +22,7 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 - **批量混剪（0.2.0）**支持分类目录导入、时间窗缩略图、可选视觉识别与语义选片、镜头替换和锁定，以及固定片头原声保留。新版本安装包的验证与发布状态以对应 Release 为准。
 - **模型服务设置（0.2.1）**按文字与识图、图片生成、视频生成、语音合成分页管理。选择平台后自动填写接入方式，提供获取密钥、开通、音色和用量入口；MiniMax 国内与国际账号分别配置。已有连接、密钥和默认服务自动保留。
 
-## 0.4.0 更新
+## 0.4.1 更新
 
 - 图片任务支持整行拖动，自定义编号（如 A01、B01）保持不变；可直接改编号，按分类、名称、勾选范围筛选，并切换编号正序、倒序或手动顺序。未筛选时显示全部。
 - 参考来源区域可拖入一张、多张图片或图片文件夹。只替换参考来源，其他参数保持，保存本行后生效。
@@ -34,7 +34,7 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 - 母图文件夹可整组导入，生成图回存每个类型目录的“子图”文件夹；Excel 的“导出位置”可填“原目录子图”，留空继续使用系统输出目录。
 - 独立候选文案框保留段内换行，提供分隔预览；组合后可以 AI 校对，批量重新搭配或轻度改写，检查采纳后用于配音。
 
-详细用法见 [0.4.0 操作说明](docs/0.4.0-批量导入与文案校对.md)。
+详细用法见 [0.4.1 操作说明](docs/0.4.1-批量导入与文案校对.md)。
 
 ## 安装与使用
 
