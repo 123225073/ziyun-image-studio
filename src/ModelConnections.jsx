@@ -1,18 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { Plus, PencilSimple, Trash, X, CheckCircle, FloppyDisk, ArrowsClockwise, Info } from '@phosphor-icons/react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Plus, PencilSimple, Trash, X, CheckCircle, FloppyDisk, ArrowsClockwise, Info, WarningCircle } from '@phosphor-icons/react';
 import { MODEL_GROUPS, MODEL_PLATFORMS, providerPlatform, platformDraft } from '../shared/model-settings.mjs';
 import ProviderHelp from './ProviderHelp.jsx';
+import './model-credentials.css';
 
 const Field = ({ label, hint, children }) => <label className="field"><span className="field-label">{label}{hint && <small>{hint}</small>}</span>{children}</label>;
 const Button = ({ children, primary, ...props }) => <button type="button" className={`button ${primary ? 'primary' : ''}`} {...props}>{children}</button>;
 
-function Dialog({ title, onClose, children }) {
+function Dialog({ title, onClose, closeDisabled = false, children }) {
   useEffect(() => {
-    const escape = event => { if (event.key === 'Escape') onClose(); };
+    const escape = event => { if (!closeDisabled && event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
-  }, [onClose]);
-  return <div className="modal-backdrop"><section className="modal model-dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}><X size={22}/></button></header>{children}</section></div>;
+  }, [onClose, closeDisabled]);
+  return <div className="modal-backdrop"><section className="modal model-dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" disabled={closeDisabled} onClick={onClose}><X size={22}/></button></header>{children}</section></div>;
 }
 
 export default function ModelConnections({ settings, call, run, notify, renderAccount }) {
@@ -23,6 +24,8 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
   const [makeDefault, setMakeDefault] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
+  const [credentialError, setCredentialError] = useState('');
   const [testing, setTesting] = useState('');
   const [deleting, setDeleting] = useState(null);
   const group = MODEL_GROUPS.find(item => item.id === groupId);
@@ -37,17 +40,20 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
     setPlatformId(first.id);
     setDraft(platformDraft(first, crypto.randomUUID()));
     setAdvanced(false);
+    setCredentialError('');
     setMakeDefault(!settings.bindings[primaryBinding]);
   };
   const edit = provider => {
     setPlatformId(providerPlatform(provider)?.id || platforms[0].id);
     setDraft({ ...provider, key: '' });
     setAdvanced(false);
+    setCredentialError('');
     setMakeDefault(false);
   };
   const switchPlatform = id => {
     const selected = MODEL_PLATFORMS.find(item => item.id === id);
     setPlatformId(id);
+    setCredentialError('');
     // New platform = new empty credential fields; never carry a key across sites.
     setDraft(current => ({ ...platformDraft(selected, current.id), ...(current.name.trim() && current.name !== platform?.label ? { name: current.name } : {}) }));
   };
@@ -63,21 +69,31 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
     } finally { setFetching(false); }
   });
   const save = () => run(async () => {
+    if (saveInFlight.current || fetching) return;
     if (!draft.baseUrl.trim()) throw new Error('请填写服务地址。');
     if (!draft.model.trim()) throw new Error('请选择或填写模型名称。');
     if (!draft.hasKey && !draft.key.trim()) throw new Error('请先通过上方入口获取 API Key，再粘贴到这里。');
     if (!Number.isFinite(+draft.timeoutMs) || +draft.timeoutMs < 1000 || +draft.timeoutMs > 3600000) throw new Error('超时时间应为 1–3600 秒。');
+    saveInFlight.current = true;
     setSaving(true);
+    setCredentialError('');
     try {
-      await call('saveProvider', { ...draft, name: draft.name.trim() || `${platform.label} · ${draft.model}` });
+      try {
+        await call('saveProvider', { ...draft, name: draft.name.trim() || `${platform.label} · ${draft.model}` });
+      } catch (error) {
+        if (!error?.code?.startsWith('CREDENTIAL_STORAGE_')) throw error;
+        setCredentialError(error.message || '请检查当前系统账户的安全存储，然后重新尝试保存。');
+        return;
+      }
       if (makeDefault) {
         const current = await call('getState');
         await call('updateSettings', { bindings: { ...current.settings.bindings, [primaryBinding]: draft.id } });
       }
       setDraft(null);
       notify(makeDefault ? '连接已保存，并已设为此功能的默认服务' : '连接已保存');
-    } finally { setSaving(false); }
+    } finally { saveInFlight.current = false; setSaving(false); }
   });
+  const closeDraft = () => { if (!saveInFlight.current) setDraft(null); };
   const test = provider => run(async () => {
     setTesting(provider.id);
     try {
@@ -110,8 +126,8 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
       </div>
     </section>
     {groupId === 'video' && renderAccount}
-    {draft && <Dialog title={editing ? '编辑模型服务' : `添加${group.label}服务`} onClose={() => !saving && setDraft(null)}>
-      <div className="modal-form">
+    {draft && <Dialog title={editing ? '编辑模型服务' : `添加${group.label}服务`} onClose={closeDraft} closeDisabled={saving}>
+      <fieldset className="modal-form model-save-form" disabled={saving} aria-busy={saving}>
         <Field label="配置名称" hint="给这个连接起一个容易辨认的名称"><input aria-label="连接名称" value={draft.name} placeholder="例如：图片生成主服务" onChange={event => patch('name', event.target.value)}/></Field>
         <Field label="服务平台"><select aria-label="服务平台" value={platformId} disabled={editing || saving || fetching} onChange={event => switchPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
         <div className="platform-guide"><strong>① 在平台开通服务并获取密钥</strong><ProviderHelp provider={draft} call={call} run={run}/><p>{platform?.custom ? '使用 CPA、Fengsha 等服务时，填写该平台提供的服务地址和密钥。支持标准 OpenAI 兼容接口。' : '下方入口在浏览器中打开。请使用同一平台账号的密钥，账号有余额且已开通对应服务后才能生成。'}</p>{draft.protocol.startsWith('minimax-') && <p>当前服务地址：{draft.baseUrl}。国内与国际账号的密钥不通用，可在高级设置中核对地址。</p>}</div>
@@ -126,8 +142,11 @@ export default function ModelConnections({ settings, call, run, notify, renderAc
           <p className="field-note">接入方式已根据平台自动选择。编辑现有服务会保留原来的接入方式和已保存密钥。</p>
         </div></details>
         <label className="inline-check model-bind-check"><input type="checkbox" checked={makeDefault} onChange={event => setMakeDefault(event.target.checked)}/>保存后用于{group.bindings[0][1]}{settings.bindings[primaryBinding] && settings.bindings[primaryBinding] !== draft.id ? '（会替换当前默认服务）' : ''}</label>
-      </div>
-      <div className="modal-actions"><Button disabled={saving} onClick={() => setDraft(null)}>取消</Button><Button primary disabled={saving || fetching} onClick={save}><FloppyDisk size={18}/>{saving ? '保存中…' : '保存服务'}</Button></div>
+      </fieldset>
+      {credentialError && <div className="model-credential-error" role="alert" data-testid="credential-storage-error">
+        <WarningCircle size={21}/><div><strong>本机密钥保存失败</strong><p>{credentialError}</p><p>当前填写的内容保留在这个窗口，处理后可直接重试。</p></div>
+      </div>}
+      <div className="modal-actions"><Button disabled={saving} onClick={closeDraft}>取消</Button><Button primary data-testid="save-model-service" disabled={saving || fetching} onClick={save}>{credentialError ? <ArrowsClockwise size={18}/> : <FloppyDisk size={18}/>} {saving ? '保存中…' : credentialError ? '重新尝试保存' : '保存服务'}</Button></div>
     </Dialog>}
     {deleting && <Dialog title="删除模型服务" onClose={() => setDeleting(null)}><p>确认删除“{deleting.name}”？使用此服务的功能需要重新选择。已有任务记录会保留。</p><div className="modal-actions"><Button onClick={() => setDeleting(null)}>取消</Button><button className="button danger" onClick={() => run(async () => { await call('deleteProvider', deleting.id); setDeleting(null); }, '连接已删除')}>删除连接</button></div></Dialog>}
   </>;

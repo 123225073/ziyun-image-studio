@@ -5,7 +5,7 @@ on:
       release_tag:
         description: Existing version tag with a locally verified Windows installer in its draft release
         required: true
-        default: v0.5.1
+        default: v0.5.2
 permissions:
   contents: read
 concurrency:
@@ -117,6 +117,9 @@ jobs:
       - name: Installed AI review and approval flow
         timeout-minutes: 6
         run: node scripts/verify-montage-review.mjs
+      - name: Installed credential recovery and legacy compatibility
+        timeout-minutes: 6
+        run: node scripts/verify-credential-storage.mjs
       - name: Installed model selection and connection names
         timeout-minutes: 6
         run: node scripts/verify-model-settings.mjs

@@ -1,7 +1,7 @@
 const {app,BrowserWindow,ipcMain,dialog,shell,safeStorage,protocol,net}=require('electron');
 const fs=require('node:fs');const fsp=require('node:fs/promises');const path=require('node:path');const {pathToFileURL}=require('node:url');const {Readable}=require('node:stream');const {randomUUID}=require('node:crypto');
 protocol.registerSchemesAsPrivileged([{scheme:'studio-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
-let win,service,pickers,vault={},vaultFile,quitting=false,unsaved=false;
+let win,service,pickers,vault,quitting=false,unsaved=false;
 const root=path.resolve(__dirname,'..');
 app.setName('子云影像工坊');
 if(process.env.ZIYUN_DATA_DIR)app.setPath('userData',path.resolve(process.env.ZIYUN_DATA_DIR));
@@ -9,49 +9,87 @@ const dataDir=app.getPath('userData');
 const imageBatchPreviews=new Map();
 const imageFolderPreviews=new Map();
 const imageOutputSelections=new Map();
-async function persistVault(){await fsp.mkdir(dataDir,{recursive:true});const temp=vaultFile+'.tmp';await fsp.writeFile(temp,JSON.stringify(vault),{mode:0o600});await fsp.rename(temp,vaultFile);}
-function keyFor(id){if(!vault[id])return '';if(!safeStorage.isEncryptionAvailable())throw new Error('Windows安全存储不可用，无法读取模型密钥。');return safeStorage.decryptString(Buffer.from(vault[id],'base64'));}
 const accountVaultId=id=>'oairegbox-account:'+id;
+const readProviderKeys=(provider,...ids)=>vault.readForProvider(provider,
+ id=>service.state.settings.providers.find(item=>item.id===id),ids);
+
+// Serialize the provider list with its encrypted entries. A failed file rename
+// restores the corresponding settings, including only bindings touched by this edit.
+function connectionSettings(buildPatch, value){
+ let original, patch;
+ return {
+  async commit(){
+   const current=await service.getState();
+   original=current.settings;
+   patch=buildPatch(current);
+   await service.updateSettings(patch);
+   return value;
+  },
+  async rollback(){
+   if(!patch)return;
+   const restore={providers:original.providers};
+   if(patch.bindings){
+    const current=(await service.getState()).settings.bindings;
+    restore.bindings=Object.fromEntries(Object.keys(patch.bindings)
+     .filter(key=>current[key]===patch.bindings[key])
+     .map(key=>[key,original.bindings[key]]));
+   }
+   await service.updateSettings(restore);
+  },
+ };
+}
 async function saveProvider(provider){
  const {oairegboxBase,h3Model}=await import('../shared/oairegbox.mjs');
+ const {checkCredentialDestination}=await import('./credential-vault.mjs');
  if(!provider||typeof provider!=='object')throw new Error('模型配置无效。');
- const id=String(provider.id||randomUUID());if(!/^[\w-]{1,100}$/.test(id))throw new Error('连接编号无效。');const state=await service.getState();const previous=state.settings.providers.find(p=>p.id===id);
- const allowed=['openai-chat','openai-images','openai-tts','doubao-tts','minimax-tts','minimax-video','replicate-video','oairegbox-video'];if(!allowed.includes(provider.protocol))throw new Error('请选择支持的接入协议。');
- const url=new URL(provider.baseUrl);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('服务地址格式无效。');
+ const id=String(provider.id||randomUUID());
+ if(!/^[\w-]{1,100}$/.test(id))throw new Error('连接编号无效。');
+ const allowed=['openai-chat','openai-images','openai-tts','doubao-tts','minimax-tts','minimax-video','replicate-video','oairegbox-video'];
+ if(!allowed.includes(provider.protocol))throw new Error('请选择支持的接入协议。');
+ const url=new URL(provider.baseUrl);
+ if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('服务地址格式无效。');
  const isOairegbox=provider.protocol==='oairegbox-video';
  const baseUrl=isOairegbox?oairegboxBase(provider.baseUrl):url.href.replace(/\/$/,'');
- const accountId=accountVaultId(id),oldAccount=vault[accountId];
+ const key=String(provider.key||'').trim();
  const newAccount=isOairegbox?String(provider.accountToken||'').trim():'';
  if(isOairegbox&&!h3Model(provider.model))throw new Error('请选择 OAIREGBOX H3 型号。');
- if(isOairegbox&&provider.key?.trim()&&!provider.key.trim().startsWith('sk-'))throw new Error('请在 API Key 填写 sk- 开头的调用令牌。');
+ if(isOairegbox&&key&&!key.startsWith('sk-'))throw new Error('请在 API Key 填写 sk- 开头的调用令牌。');
  if(newAccount&&(newAccount.startsWith('sk-')||newAccount.length>4096||/\s/.test(newAccount)))throw new Error('请填写个人设置中的账号访问令牌。');
  if(!provider.name?.trim()||!provider.model?.trim())throw new Error('请填写连接名称和模型标识。');
- const referenced=state.jobs.filter(j=>j.providerId===id);
- if(previous&&referenced.length&&(previous.baseUrl!==baseUrl||previous.protocol!==provider.protocol))throw new Error('此连接已有任务历史，修改地址或协议请新建连接，避免旧任务把密钥发往其他地址。');
- if(previous&&referenced.some(j=>['queued','planning','running','saving','unknown'].includes(j.status))&&(provider.key?.trim()||previous.model!==provider.model))throw new Error('此连接还有未完成或状态未知的任务；更换密钥或模型请新建连接。');
- const old=vault[id];
- if(!old&&!provider.key?.trim())throw new Error('请填写 API Key。');
- if((provider.key?.trim()||newAccount)&&!safeStorage.isEncryptionAvailable())throw new Error('系统安全存储不可用，未保存凭据。');
- try{
-  if(provider.key?.trim())vault[id]=safeStorage.encryptString(provider.key.trim()).toString('base64');
-  if(!isOairegbox||provider.clearAccountToken)delete vault[accountId];
-  else if(newAccount)vault[accountId]=safeStorage.encryptString(newAccount).toString('base64');
-  await persistVault();
-  const publicProvider={id,name:provider.name.trim(),protocol:provider.protocol,baseUrl,model:provider.model.trim(),timeoutMs:Number(provider.timeoutMs)||180000,hasKey:true,...(isOairegbox?{hasAccountToken:Boolean(vault[accountId])}:{})};
-  if(provider.protocol==='doubao-tts'){
-   publicProvider.resourceId=String(provider.resourceId||provider.model||'seed-tts-2.0').trim();
-   if(!/^[a-zA-Z0-9._-]{1,120}$/.test(publicProvider.resourceId))throw new Error('豆包资源ID格式无效。');
-  }
-  await service.updateSettings({providers:[...state.settings.providers.filter(p=>p.id!==id),publicProvider]});
-  return publicProvider;
- }catch(e){
-  if(old)vault[id]=old;else delete vault[id];
-  if(oldAccount)vault[accountId]=oldAccount;else delete vault[accountId];
-  await persistVault().catch(()=>{});
-  throw e;
+ const saved={id,name:provider.name.trim(),protocol:provider.protocol,baseUrl,model:provider.model.trim(),timeoutMs:Number(provider.timeoutMs)||180000,hasKey:true};
+ if(provider.protocol==='doubao-tts'){
+  saved.resourceId=String(provider.resourceId||provider.model||'seed-tts-2.0').trim();
+  if(!/^[a-zA-Z0-9._-]{1,120}$/.test(saved.resourceId))throw new Error('豆包资源ID格式无效。');
  }
+ return vault.transaction(async edit=>{
+  const accountId=accountVaultId(id);
+  const previous=service.state.settings.providers.find(item=>item.id===id);
+  checkCredentialDestination(previous,saved,edit.has(id)||edit.has(accountId),Boolean(key||newAccount));
+  if(!key&&!edit.has(id))throw new Error('请填写 API Key。');
+  if(key)await edit.set(id,key);
+  if(!isOairegbox||provider.clearAccountToken)edit.remove(accountId);
+  else if(newAccount)await edit.set(accountId,newAccount);
+  if(isOairegbox)saved.hasAccountToken=edit.has(accountId);
+  return connectionSettings(state=>{
+   const previous=state.settings.providers.find(item=>item.id===id);
+   const referenced=state.jobs.filter(job=>job.providerId===id);
+   if(previous&&referenced.length&&(previous.baseUrl!==baseUrl||previous.protocol!==provider.protocol))throw new Error('此连接已有任务历史，修改地址或协议请新建连接，避免旧任务把密钥发往其他地址。');
+   if(previous&&referenced.some(job=>['queued','planning','running','saving','unknown'].includes(job.status))&&(key||previous.model!==provider.model))throw new Error('此连接还有未完成或状态未知的任务；更换密钥或模型请新建连接。');
+   return {providers:[...state.settings.providers.filter(item=>item.id!==id),saved]};
+  },saved);
+ });
 }
-async function removeProvider(id){const state=await service.getState();if(state.jobs.some(j=>j.providerId===id&&['running','saving','queued','planning','unknown'].includes(j.status)))throw new Error('此连接仍有未完成或状态未知的任务，请先核对任务后再删除。');if(state.settings.speechPresets?.some(p=>p.providerId===id))throw new Error('请先删除或更换使用此连接的配音预设。');const bindings={...state.settings.bindings};for(const k of Object.keys(bindings))if(bindings[k]===id)bindings[k]='';await service.updateSettings({providers:state.settings.providers.filter(p=>p.id!==id),bindings});delete vault[id];delete vault[accountVaultId(id)];await persistVault();}
+async function removeProvider(id){
+ return vault.transaction(async edit=>{
+  edit.remove(id);edit.remove(accountVaultId(id));
+  return connectionSettings(state=>{
+   if(state.jobs.some(job=>job.providerId===id&&['running','saving','queued','planning','unknown'].includes(job.status)))throw new Error('此连接仍有未完成或状态未知的任务，请先核对任务后再删除。');
+   if(state.settings.speechPresets?.some(p=>p.providerId===id))throw new Error('请先删除或更换使用此连接的配音预设。');
+   const bindings=Object.fromEntries(Object.entries(state.settings.bindings).filter(([,value])=>value===id).map(([key])=>[key,'']));
+   return {providers:state.settings.providers.filter(item=>item.id!==id),bindings};
+  });
+ });
+}
 const selectedPaths=new Set();
 async function allowedPaths(){const s=await service.getState();const sectionMedia=sections=>(Array.isArray(sections)?sections:Object.values(sections||{})).flatMap(seg=>[...(seg.paths||[]),seg.audioPath,...(seg.shots||[]).map(shot=>shot.path)]).filter(Boolean);const files=[...selectedPaths,...(s.montageBindingLibrary?.folders||[]).flatMap(folder=>folder.paths||[]),...(s.montageDrafts||[]).flatMap(d=>[d.config?.openingPath,d.config?.masterAudioPath,...(d.timeline?.clips||[]).map(c=>c.path)]),...(s.montageSetup?.sections||[]).flatMap(section=>section.paths||[]),s.montageSetup?.masterAudioPath,s.montageSetup?.openingPath,...s.assets.map(a=>a.path),...(s.montageAssets||[]).flatMap(a=>[a.path,...(a.shots||[]).map(shot=>shot.thumbnailPath)]),...s.rows.flatMap(r=>r.sourcePaths||[]),...s.jobs.flatMap(j=>[j.localPath,...(j.referencePaths||[]),j.snapshot?.config?.openingPath,j.snapshot?.config?.masterAudioPath,...sectionMedia(j.snapshot?.config?.segments),...(j.timeline?.clips||[]).map(c=>c.path),...(j.snapshot?.config?.timeline?.clips||[]).map(c=>c.path)]),...s.formulas.flatMap(f=>[f.openingPath,f.masterAudioPath,...sectionMedia(f.sections)])].filter(Boolean);return new Set(files.map(p=>path.resolve(p).toLowerCase()));}
 function checkSender(event){if(!win||event.sender.id!==win.webContents.id||event.senderFrame!==win.webContents.mainFrame)throw new Error('此窗口没有操作权限。');}
@@ -59,14 +97,19 @@ function mediaHeaders(file){const ext=path.extname(file).toLowerCase();return {'
 async function setup(){
  if(!app.requestSingleInstanceLock()){if(process.argv.includes('--configure-cpa')){process.stderr.write('请先关闭应用，再导入测试配置。\n');app.exit(1);}else app.quit();return;}
  app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
- vaultFile=path.join(dataDir,process.platform==='darwin'?'credentials.keychain.json':'credentials.dpapi.json');try{vault=JSON.parse(await fsp.readFile(vaultFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw new Error('加密配置无法读取，请保留数据目录并检查文件。');}
+ const {openCredentialVault}=await import('./credential-vault.mjs');
+ const vaultFile=path.join(dataDir,process.platform==='darwin'?'credentials.keychain.json':'credentials.dpapi.json');
+ vault=await openCredentialVault({file:vaultFile,safeStorage});
  const {StudioService}=await import('./service.mjs');const {runProvider,sniffMedia,readOairegboxDashboard}=await import('./providers.mjs');const {renderMontage,readMontageTimeline,prepareMontageTimeline,mediaDuration,resolveFfmpeg,runMedia}=await import('./render.mjs');
  const {scanMontageFolder}=await import('./montage-library.mjs');
  const {TTS_PROTOCOLS}=await import('../shared/speech.mjs');
  const {normalizeTimeline}=await import('../shared/timeline.mjs');
  const {OAIREGBOX_BASE,OAIREGBOX_CONSOLE,oairegboxBase}=await import('../shared/oairegbox.mjs');
  const ffmpegPath=await resolveFfmpeg(app.isPackaged?process.resourcesPath:root,dataDir);
- const providerRunner=async(op,payload,context)=>runProvider(op,payload,{...context,inspectDuration:(file,signal)=>mediaDuration(ffmpegPath,file,signal),provider:{...context.provider,key:keyFor(context.provider.id)}});
+ const providerRunner=async(op,payload,context)=>{
+  const [key]=await readProviderKeys(context.provider,context.provider.id);
+  return runProvider(op,payload,{...context,inspectDuration:(file,signal)=>mediaDuration(ffmpegPath,file,signal),provider:{...context.provider,key}});
+ };
  const concatSpeech=async(files,output,options,signal)=>{
   const directory=path.dirname(output);
   const list=path.join(directory,`${path.basename(output)}.txt`);
@@ -103,14 +146,15 @@ async function setup(){
     if(!['http:','https:'].includes(address.protocol)||address.username||address.password||address.search||address.hash)throw new Error('服务地址格式无效。');
     const baseUrl=draft.protocol==='oairegbox-video'?oairegboxBase(draft.baseUrl):address.href.replace(/\/$/,'');
     const sameConnection=saved&&saved.baseUrl===baseUrl&&saved.protocol===draft.protocol;
-    const key=draft.key?.trim()||(sameConnection?keyFor(saved.id):'');
+    const key=draft.key?.trim()||(sameConnection?(await readProviderKeys(saved,saved.id))[0]:'');
     if(!key)throw new Error('请填写当前接口的 API Key。');
     return {ok:true,value:await runProvider('models',{}, {provider:{baseUrl,protocol:draft.protocol,key,model:draft.model||'',resourceId:draft.resourceId,timeoutMs:15000}})};
    }if(method==='readOairegboxDashboard'){
     const id=args[0];
     const p=(await service.getState()).settings.providers.find(item=>item.id===id&&item.protocol==='oairegbox-video');
     if(id&&!p)throw new Error('请先保存 OAIREGBOX 视频连接。');
-    return {ok:true,value:await readOairegboxDashboard({baseUrl:p?.baseUrl||OAIREGBOX_BASE,key:p?keyFor(p.id):'',accountToken:p?keyFor(accountVaultId(p.id)):''})};
+    const [key,accountToken]=p?await readProviderKeys(p,p.id,accountVaultId(p.id)):['',''];
+    return {ok:true,value:await readOairegboxDashboard({baseUrl:p?.baseUrl||OAIREGBOX_BASE,key,accountToken})};
    }if(method==='openProviderHelp'){
     const {providerHelpUrl}=await import('../shared/model-settings.mjs');
     const input=args[0]||{};
@@ -253,7 +297,7 @@ async function setup(){
     return {ok:true,value:result};
    }
    if(method==='setUnsaved'){unsaved=Boolean(args[0]);return {ok:true};}if(!methods.has(method))throw new Error('不支持的操作。');if(method==='updateSettings'&&args[0]?.providers)throw new Error('连接请通过专用保存操作维护。');const value=await service[method](...args);if(method==='scanFolder')for(const p of value)selectedPaths.add(p);return {ok:true,value};
-  }catch(e){return {ok:false,error:typeof e.message==='string'?e.message:'操作失败。'};}});
+  }catch(e){return {ok:false,error:typeof e.message==='string'?e.message:'操作失败。',...(typeof e.code==='string'&&e.code.startsWith('CREDENTIAL_STORAGE_')?{code:e.code,retryable:true}:{})};}});
  const isDirectory=async dir=>path.isAbsolute(dir||'')&&(await fsp.stat(dir).catch(()=>null))?.isDirectory();
  async function imageDefaultPath(){
   const {settings,rows}=await service.getState();
