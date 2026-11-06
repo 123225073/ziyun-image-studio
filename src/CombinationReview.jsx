@@ -13,6 +13,8 @@ export default function CombinationReview({ setup, count, state, session, signat
   const providers=state.settings.providers.filter(item=>item.protocol==='openai-chat');
   const defaultProvider=state.settings.bindings.rewrite||state.settings.bindings.vision||'';
   const chosenProvider=providerId||defaultProvider;
+  const connection=providers.find(item=>item.id===chosenProvider);
+  const connectionReady=Boolean(connection?.model&&connection?.baseUrl);
   const boundMasterAudio=setup.mode==='master'&&Boolean(setup.masterAudioPath);
   const items=session?.items||{};
   const records=Object.values(items).filter(item=>Number.isSafeInteger(item.index)&&item.index<count);
@@ -34,7 +36,7 @@ export default function CombinationReview({ setup, count, state, session, signat
     if(operation||disabled)return;
     const total=chosen?.length??count;
     if(!total)throw new Error('请先准备或选择需要处理的组合。');
-    if(kind!=='accept'&&!providers.some(item=>item.id===chosenProvider))throw new Error('请选择用于文案校对的 AI 连接。');
+    if(kind!=='accept'&&!connectionReady)throw new Error('请选择用于文案校对的 AI 连接。');
     if(setup.mode==='master'&&setup.masterAudioPath&&kind!=='review')throw new Error('已绑定旁白音频，调整文案前请先解除配音绑定。');
     stopping.current=false;onBusy(true);setNotice('');let completed=0,failed=0,lastError='';
     setOperation({kind,current:0,total});
@@ -55,7 +57,7 @@ export default function CombinationReview({ setup, count, state, session, signat
   });
   const reviewTargets=scope==='selected'?selected:scope==='page'?indices:null;
   const suggestionTargets=selected.filter(index=>['pass','issue'].includes(items[index]?.status));
-  const canSuggest=!disabled&&!operation&&suggestionTargets.length>0&&!(setup.mode==='master'&&setup.masterAudioPath);
+  const canSuggest=connectionReady&&!disabled&&!operation&&suggestionTargets.length>0&&!(setup.mode==='master'&&setup.masterAudioPath);
   const saveBindings=bindingsBySegment=>run(async()=>{
     if(operation||disabled||!bindingEdit)return;
     setOperation({kind:'bindings',current:1,total:1});onBusy(true);
@@ -63,15 +65,14 @@ export default function CombinationReview({ setup, count, state, session, signat
     finally{setOperation(null);onBusy(false);}
   });
   return <section className="combination-review" aria-label="AI 文案逻辑校对">
-    <div className="review-title"><div><h3><Sparkle size={20}/>4. AI 文案校对与素材确认</h3><p>先检查完整组合。处理问题、确认素材对应并通过校对后，才能生成完整配音。</p></div><span className="review-required">配音前完成</span></div>
     <div className="review-controls">
       <label className="field"><span className="field-label">校对连接</span><select aria-label="文案校对AI连接" disabled={disabled||Boolean(operation)} value={chosenProvider} onChange={e=>setProviderId(e.target.value)}><option value="">请选择文字模型连接</option>{providers.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label className="field"><span className="field-label">校对范围</span><select aria-label="文案校对范围" disabled={disabled||Boolean(operation)} value={scope} onChange={e=>setScope(e.target.value)}><option value="all">本次全部 {count} 条组合</option><option value="page">当前显示的 {indices.length} 条</option><option value="selected">已勾选的 {selected.length} 条</option></select></label>
-      <button className="button primary" disabled={disabled||Boolean(operation)||!count||(scope!=='all'&&!reviewTargets?.length)} onClick={()=>execute('review',reviewTargets)}><Sparkle size={17}/>开始 AI 校对</button>
-      <span className="review-cost-note">点击后调用所选 AI 服务</span>
+      <button className="button primary" disabled={disabled||Boolean(operation)||!count||!connectionReady||(scope!=='all'&&!reviewTargets?.length)} onClick={()=>execute('review',reviewTargets)}><Sparkle size={17}/>开始 AI 校对</button>
+      <span className="review-cost-note">{connectionReady?'点击后逐条调用所选 AI 服务。':!providers.length?'先在全局设置添加文字模型连接。':connection?'请在全局设置补全此连接的地址与模型。':'请选择上方的校对连接。'}</span>
     </div>
     <div className="review-stats"><span>已校对 <b>{reviewed}</b> / {count}</span><span className="review-good">通过 <b>{passed}</b></span><span className="review-problems">有问题 <b>{issues.length}</b></span><span>待校对 / 重试 <b>{Math.max(0,count-reviewed)}</b></span></div>
-    {boundMasterAudio&&<p className="review-notice">当前文案绑定了已有配音。可以校对；如需改写，请先解除配音绑定，调整后重新合成声音。</p>}
+    {boundMasterAudio&&<p className="review-notice">当前文案绑定了已有音频，可以直接校对。如需调整文案，请到第 1 步解除配音绑定。</p>}
     {operation&&<div className="review-progress" role="status"><span>{operation.kind==='review'?'正在校对':operation.kind==='accept'?'正在采纳':operation.kind==='bindings'?'正在保存素材对应':'正在生成建议'} {operation.current} / {operation.total}，已完成的结果会保留。</span>{operation.kind!=='bindings'&&<button className="button" onClick={()=>{stopping.current=true;setNotice('当前条完成后停止。')}}>停止后续处理</button>}</div>}
     {notice&&<p className="review-notice" role="status">{notice}</p>}
     <div className="review-list-toolbar">
@@ -79,7 +80,8 @@ export default function CombinationReview({ setup, count, state, session, signat
       <label className="inline-check"><input type="checkbox" aria-label="选择当前页组合" disabled={disabled||Boolean(operation)||!indices.length} checked={indices.length>0&&indices.every(index=>selected.includes(index))} onChange={event=>setSelected(previous=>event.target.checked?[...new Set([...previous,...indices])]:previous.filter(index=>!indices.includes(index)))}/>选本页</label>
       <button className="text-button" disabled={disabled||Boolean(operation)||!issues.length} onClick={()=>setSelected(issues)}>选择全部问题</button>
     </div>
-    <div className="review-batch-actions"><span>已选 {selected.length} 条{selected.length>suggestionTargets.length?` · ${suggestionTargets.length} 条可调整`:''}</span><button className="button" disabled={!canSuggest||setup.mode==='master'} onClick={()=>execute('rematch',suggestionTargets)}><ArrowsClockwise size={16}/>重新搭配所选</button><button className="button" disabled={!canSuggest} onClick={()=>execute('rewrite',suggestionTargets)}><Sparkle size={16}/>轻度改写所选</button><button className="button" disabled={disabled||Boolean(operation)||!proposals.length} onClick={()=>setConfirm(proposals)}>检查并采纳建议（{proposals.length}）</button>{selected.length>0&&<button className="text-button" disabled={Boolean(operation)} onClick={()=>setSelected([])}>取消选择</button>}</div>
+    {issues.length>0&&<p className="workflow-review-guide">可以重新搭配候选，或轻度改写衔接。先预览建议，再采纳并重新校对。</p>}
+    {selected.length>0&&<div className="review-batch-actions"><span>已选 {selected.length} 条{selected.length>suggestionTargets.length?` · ${suggestionTargets.length} 条可调整`:''}</span><button className="button" disabled={disabled||Boolean(operation)||!connectionReady} onClick={()=>execute('review',selected,true)}>重新校对所选</button><button className="button" disabled={!canSuggest||setup.mode==='master'} onClick={()=>execute('rematch',suggestionTargets)}><ArrowsClockwise size={16}/>重新搭配所选</button><button className="button" disabled={!canSuggest} onClick={()=>execute('rewrite',suggestionTargets)}><Sparkle size={16}/>轻度改写所选</button><button className="button" disabled={disabled||Boolean(operation)||!proposals.length} onClick={()=>setConfirm(proposals)}>检查并采纳建议（{proposals.length}）</button>{selected.length>0&&<button className="text-button" disabled={Boolean(operation)} onClick={()=>setSelected([])}>取消选择</button>}</div>}
     <div className="review-item-list">
       {indices.map(index=>{const record=items[index],combo=combinationAt(index),proposal=record?.proposal;return <article key={index} className={`review-item ${record?.status||'new'}`}>
         <header><label className="inline-check"><input type="checkbox" aria-label={`选择文案组合 ${index+1}`} disabled={disabled||Boolean(operation)} checked={selected.includes(index)} onChange={()=>toggle(index)}/><strong>组合 {number(index)}</strong></label><span className={`review-status ${record?.status||'new'}`}>{record?.status==='pass'?<CheckCircle size={14}/>:record?.status==='issue'?<WarningCircle size={14}/>:null}{statusName(record?.status)}</span>{record?.accepted&&<span className="review-accepted">已采纳调整</span>}</header>
@@ -90,7 +92,7 @@ export default function CombinationReview({ setup, count, state, session, signat
         {record?.error&&<p className="review-error">{record.error}</p>}
         {record?.suggestionError&&<p className="review-error">建议生成失败：{record.suggestionError}</p>}
         {record?.issues?.length>0&&<ul className="review-issues">{record.issues.map((issue,i)=><li key={i}>{issue.section&&<strong>{issue.section} 段：</strong>}{issue.message}{issue.quote&&<blockquote>{issue.quote}</blockquote>}{issue.suggestion&&<small>{issue.suggestion}</small>}</li>)}</ul>}
-        <div className="review-item-actions"><button className="text-button" disabled={disabled||Boolean(operation)} onClick={()=>execute('review',[index],Boolean(record))}>{record?'重新校对':'校对这条'}</button><button className="button" disabled={disabled||Boolean(operation)||!record} onClick={()=>setBindingEdit({index,combo:structuredClone(combo)})}>检查素材对应</button><button className="button" disabled={disabled||Boolean(operation)||setup.mode==='master'||!['pass','issue'].includes(record?.status)||boundMasterAudio} onClick={()=>execute('rematch',[index])}>重新搭配</button><button className="button" disabled={disabled||Boolean(operation)||!['pass','issue'].includes(record?.status)||boundMasterAudio} onClick={()=>execute('rewrite',[index])}>轻度改写</button></div>
+        <div className="review-item-actions"><button className="text-button" disabled={disabled||Boolean(operation)||!connectionReady} onClick={()=>execute('review',[index],Boolean(record))}>{record?'重新校对':'校对这条'}</button><button className="button" disabled={disabled||Boolean(operation)||!record} onClick={()=>setBindingEdit({index,combo:structuredClone(combo)})}>检查素材对应</button><button className="button" disabled={disabled||Boolean(operation)||!connectionReady||setup.mode==='master'||!['pass','issue'].includes(record?.status)||boundMasterAudio} onClick={()=>execute('rematch',[index])}>重新搭配</button><button className="button" disabled={disabled||Boolean(operation)||!connectionReady||!['pass','issue'].includes(record?.status)||boundMasterAudio} onClick={()=>execute('rewrite',[index])}>轻度改写</button></div>
         {proposal&&<details className="review-proposal" open><summary>{proposal.mode==='rematch'?'重新搭配建议':'轻度改写建议'}</summary><p>{proposal.reason}</p><div className="review-compare"><div><span>当前文案</span><p>{combo.masterText}</p></div><div><span>建议文案</span><p>{proposal.masterText}</p></div></div><BindingOverview segments={proposal.segments}/>{proposal.bindingWarning&&<p className="binding-error">{proposal.bindingWarning}</p>}<button className="button" disabled={disabled||Boolean(operation)||boundMasterAudio||record.accepted?.proposalId===proposal.id} onClick={()=>setConfirm([index])}>检查并采纳这条建议</button></details>}
       </article>})}
       {!indices.length&&<div className="review-empty">{!count?'填写候选文案后，可以在这里校对完整组合。':filter==='issue'?(reviewed?'当前校对结果中没有问题组合。':'尚未校对。点击上方“开始 AI 校对”，问题会单独列在这里。'):'这里暂时没有对应的组合。'}</div>}

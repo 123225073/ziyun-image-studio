@@ -162,7 +162,7 @@ try {
   await montage.getByRole('button', { name: '添加开头视频（可选）', exact: true }).click();
   await montage.getByLabel('片头声音策略', { exact: true }).selectOption('original');
   await montage.getByLabel('混剪任务名称', { exact: true }).fill('原声片头验收');
-  await montage.getByRole('button', { name: '开始混剪 · 1 条', exact: true }).click();
+  await montage.getByTestId('generate-montage-drafts').click();
   await page.getByRole('dialog', { name: '成片时间轴' }).waitFor({ timeout: 60000 });
   const preparedState = await page.evaluate(() => window.studio.call('getState'));
   assert(preparedState.montageDrafts[0].timeline.clips.filter(clip => clip.track === 'picture').length >= 2);

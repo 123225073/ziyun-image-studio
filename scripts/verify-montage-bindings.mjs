@@ -65,7 +65,7 @@ const waitState = async (predicate, timeout = 20000) => { const end = Date.now()
 const panel = () => page.getByRole('region', { name: 'AI 文案逻辑校对', exact: true });
 const reviewButton = name => panel().getByRole('button', { name, exact: true });
 const idle = () => panel().locator('.review-progress').waitFor({ state: 'hidden' });
-const begin = () => page.getByRole('button', { name: '开始混剪 · 2 条', exact: true });
+const begin = () => page.getByTestId('generate-montage-drafts');
 const records = state => Object.values(state.montageReviews?.at(-1)?.items || {});
 const nativePick = file => application.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, file);
 async function launch() {
@@ -103,7 +103,7 @@ try {
   state = await waitState(state => state.montageSetup?.sections[0]?.candidateBindings?.[0]?.bindings?.length === 2);
   assert.equal(await begin().isDisabled(), true, '未校对不得开始配音'); assert.equal(speech.length, 0);
   await page.getByLabel('A 段候选文案 1', { exact: true }).fill(`${original[0][0]}已编辑。`);
-  await page.getByText('候选文案已修改，请先处理上方红色标注，再校对完整组合。', { exact: true }).waitFor();
+  await page.getByText('候选文案已修改，请先处理第 1 步的红色标注，再校对完整组合。', { exact: true }).waitFor();
   assert.equal(await reviewButton('开始 AI 校对').isDisabled(), true, '改字后旧选区不能继续校对');
   await page.getByLabel('A 段候选文案 1', { exact: true }).fill(original[0][0]);
   await page.getByLabel('A 段候选文案 1 标注 1 文件夹', { exact: true }).selectOption(scene);
@@ -172,7 +172,7 @@ try {
   }
   await page.getByLabel('本次混剪范围', { exact: true }).selectOption('limited');
   await page.getByLabel('混剪组合数量', { exact: true }).fill('1');
-  await page.getByRole('button', { name: '开始混剪 · 1 条', exact: true }).click();
+  await page.getByTestId('generate-montage-drafts').click();
   const timeline = page.getByRole('dialog', { name: '成片时间轴', exact: true }); await timeline.waitFor();
   await timeline.getByRole('button', { name: '返回成片', exact: true }).click();
   state = await call('getState');
