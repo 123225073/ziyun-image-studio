@@ -4,15 +4,15 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 
 ## 下载安装
 
-当前版本为 0.5.0。Windows 已完成本地打包、安装与功能验收；两种 Mac 版本已在对应平台完成构建、安装及功能验收。发布附件均已下载核对大小和 SHA-256。
+当前版本为 0.5.1。Windows 已完成本地打包、安装与功能验收；两种 Mac 版本已在对应平台完成构建、安装及功能验收。发布附件均已下载核对大小和 SHA-256。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.0/ZiyunStudio-Setup-0.5.0.exe) |
-| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.0/ZiyunStudio-0.5.0-mac-arm64.dmg) |
-| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.0/ZiyunStudio-0.5.0-mac-x64.dmg) |
+| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.1/ZiyunStudio-Setup-0.5.1.exe) |
+| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.1/ZiyunStudio-0.5.1-mac-arm64.dmg) |
+| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.1/ZiyunStudio-0.5.1-mac-x64.dmg) |
 
-[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.0/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.5.0.zip)
+[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.1/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.5.1.zip)
 
 ## 功能
 
