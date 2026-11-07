@@ -1,3 +1,4 @@
+import { planImageImport } from '../shared/image-import-selection.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -90,7 +91,7 @@ test('可信导入幂等且持久化，普通保存不能注入或改写原目�
   assert.deepEqual(service.state.rows[0].sourcePaths,[replacement]);assert.equal(service.state.rows[0].sourceFolder,folder);assert.equal(service.state.rows[0].folderName,path.join(folder,'子图'));
   const ordinary = await service.saveRow({ code: 'B01', outputMode: 'source-children', sourceRoot, sourceFolder: folder, motherPath: row.motherPath });
   assert.equal(ordinary.outputMode, undefined);
-  const again = await scanImageFolderImport(sourceRoot, { existingRows: service.state.rows }); assert.equal(again.invalidCount, 1);
+  const again = await scanImageFolderImport(sourceRoot, { existingRows: service.state.rows }); assert.equal(again.invalidCount, 0); assert.equal(planImageImport(again.rows,service.state.rows.map(row=>service.imageImportTarget(row)))[0].action,'skip');
   await service.close();
   const restored = await StudioService.create({ dataDir });
   assert.equal(restored.state.rows[0].sourceFolder, folder); assert.deepEqual(await restored.importImageFolderBatch('directory-preview', []), imported);

@@ -4,7 +4,7 @@ import { sniffMedia } from './providers.mjs';
 import { isLocalImageBatchPath, normalizeImageBatchRow } from '../shared/image-batch-import.mjs';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
-const pathKey = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+export const pathKey = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
 const samePath = (a, b) => pathKey(a) === pathKey(b);
 const missingStat = file => fs.lstat(file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
 
@@ -94,12 +94,10 @@ export async function scanImageFolderImport(selectedRoot, { existingRows = [], s
   });
   if (folders.length > 500) throw new Error('每次最多导入 500 个类型文件夹，请分批整理。');
   const rows = [], errors = [], warnings = [], occupied = existingRows.map(row => ({ code: row.code }));
-  const importedFolders = new Set(existingRows.filter(row => row.outputMode === 'source-children' && row.sourceFolder).map(row => pathKey(row.sourceFolder)));
   for (const entry of folders) {
     const folderPath = path.join(rootPath, entry.name), outputPath = path.join(folderPath, '子图');
     const normalized = normalizeImageBatchRow(folderIdentity(entry.name), { existingRows: occupied, settings });
-    const row = { sourceRoot: rootPath, folderPath, folderName: entry.name, code: normalized.values.code, name: normalized.values.name, motherPath: '', motherPaths: [], outputPath, values: normalized.values, errors: [...normalized.errors], warnings: [...normalized.warnings] };
-    if (importedFolders.has(pathKey(folderPath))) row.errors.push('这个类型目录已经导入，请编辑已有任务，避免重复生成。');
+    const row = { sourceRoot: rootPath, folderPath, folderKey: pathKey(folderPath), folderName: entry.name, code: normalized.values.code, name: normalized.values.name, motherPath: '', motherPaths: [], outputPath, values: normalized.values, errors: [...normalized.errors], warnings: [...normalized.warnings] };
     try {
       const mapping = await inspectImageTypeFolder(folderPath, { sourceRoot: rootPath });
       row.motherPath = mapping.motherPath;
@@ -108,7 +106,7 @@ export async function scanImageFolderImport(selectedRoot, { existingRows = [], s
       row.values.folderName = mapping.outputPath;
       row.warnings.push(...mapping.warnings);
     } catch (error) { row.errors.push(error.message); }
-    if (row.code) occupied.push({ code: row.code });
+    if (row.code && !row.errors.length) occupied.push({ code: row.code });
     rows.push(row);
   }
   if (!rows.length) errors.push('根目录中没有类型子文件夹。请按“根目录 / A01-类型名 / 母图.png”整理后重试。');

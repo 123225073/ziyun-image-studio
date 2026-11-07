@@ -14,7 +14,7 @@ import { toSrt } from './render.mjs';
 import { alignSections } from '../shared/montage-batch.mjs';
 import { nextImageRowCode } from '../shared/image-rows.mjs';
 import { imageBatchCodeKey } from '../shared/image-batch-import.mjs';
-import { validateImageFolderMapping } from './image-folder-import.mjs';
+import { pathKey, validateImageFolderMapping } from './image-folder-import.mjs';
 import { reviewSource, reviewTextKey, montageReviewCombination, montageReviewRequest, montageSuggestionRequest, parseMontageReview, parseMontageSuggestion, montageBindingReviewRequest, applyMontageBindingReview } from './montage-review.mjs';
 import { normalizeMontageBindings, montageBindingProblems, montageVisualFragments } from '../shared/montage-bindings.mjs';
 
@@ -397,85 +397,102 @@ export class StudioService {
       return clone(saved);
     });
   }
-  imageBatchImportResult(ids) {
-    const rows = ids.map(id => this.state.rows.find(row => row.id === id)).filter(Boolean);
-    return { importedIds: [...ids], importedCount: ids.length,
+  imageImportTarget(row) {
+    const jobs = this.currentImages(row.id);
+    return {
+      id: row.id, code: row.code, name: row.name,
+      folderKey: row.outputMode === 'source-children' && row.sourceFolder ? pathKey(row.sourceFolder) : '',
+      revision: createHash('sha256').update(JSON.stringify(row)).digest('hex'),
+      busy: this.imageDescribeTasks.has(row.id) || jobs.some(job => !TERMINAL.has(job.status) || job.status === 'unknown' || this.active.has(job.id)),
+      minimumCount: jobs.reduce((count, job) => Math.max(count, job.slot + 1), 0),
+    };
+  }
+
+  imageBatchImportResult(record) {
+    const rows = record.ids.map(id => this.state.rows.find(row => row.id === id)).filter(Boolean);
+    return { importedIds: [...record.ids], importedCount: record.ids.length, overwrittenCount: record.overwrittenCount || 0,
       describedCount: rows.filter(row => row.batchImport?.status === 'done').length,
       reverseFailures: rows.filter(row => row.batchImport?.status === 'error').map(row => ({ id: row.id, code: row.code, message: row.batchImport.error })) };
   }
 
-  // Native IPC owns the preview token and re-scans it before calling this method.
-  // It is deliberately not exposed as a generic renderer service method.
-  async importImageFolderBatch(previewId, entries) {
-    return this.serializeSubmission(async () => {
-      this.assertOpen();
-      const previous = this.state.imageFolderImports.find(item => item.id === previewId);
-      if (previous) return { importedIds: [...previous.ids], importedCount: previous.ids.length };
-      if (typeof previewId !== 'string' || !previewId || !Array.isArray(entries) || !entries.length || entries.length > 500 || entries.some(entry => !entry || !Array.isArray(entry.errors) || entry.errors.length)) throw new Error('母图目录预览无效，请重新选择目录。');
-      const codes = new Set(this.state.rows.map(row => imageBatchCodeKey(row.code)));
-      const folderKey = folder => process.platform === 'win32' ? path.resolve(folder).toLowerCase() : path.resolve(folder);
-      const folders = new Set(this.state.rows.filter(row => row.outputMode === 'source-children').map(row => folderKey(row.sourceFolder)));
-      const imported = [];
-      for (const entry of entries) {
-        const row = normalizedRow({ ...entry.values, id: uid() });
-        if (!row.code || codes.has(imageBatchCodeKey(row.code))) throw new Error(`编号 ${row.code || '（空）'} 已存在，请重新预览。`);
-        codes.add(imageBatchCodeKey(row.code));
-        Object.assign(row, { outputMode: 'source-children', sourceRoot: entry.sourceRoot, sourceFolder: entry.folderPath, motherPath: entry.motherPath, motherPaths: entry.motherPaths || [entry.motherPath], folderName: path.join(entry.folderPath, '子图') });
+  async saveImageImport(previewId, entries, historyKey) {
+    this.assertOpen();
+    const history = this.state[historyKey];
+    const previous = history.find(item => item.id === previewId);
+    if (previous) return { record: previous, existing: true };
+    if (typeof previewId !== 'string' || !previewId || !Array.isArray(entries) || !entries.length || entries.length > 500 || entries.some(entry => !entry || !Array.isArray(entry.errors) || entry.errors.length)) {
+      throw new Error('导入预览无效，请重新选择文件或目录。');
+    }
+    const rows = [...this.state.rows];
+    const imported = [];
+    for (const entry of entries) {
+      const index = entry.overwriteId ? rows.findIndex(row => row.id === entry.overwriteId) : -1;
+      const previousRow = rows[index];
+      const code = String(entry.values?.code || '').trim();
+      const assertAvailable = () => {
+        if (entry.overwriteId) {
+          const target = previousRow && this.imageImportTarget(previousRow);
+          if (!target || target.revision !== entry.overwriteRevision || target.busy || entry.values.count < target.minimumCount ||
+              imported.some(row => row.id === entry.overwriteId)) {
+            throw new Error('已有任务的配置或生成状态已变化，请重新预览或改为加后缀新增。');
+          }
+        }
+        if (!code || rows.some(row => row.id !== entry.overwriteId && imageBatchCodeKey(row.code) === imageBatchCodeKey(code))) {
+          throw new Error(`编号 ${code || '（空）'} 已存在或无效，请重新预览。`);
+        }
+      };
+      assertAvailable();
+      const row = normalizedRow({ ...entry.values, id: uid(), code, clearOutputMapping: true }, previousRow);
+      delete row.batchImport;
+      const mapping = entry.outputMapping || (entry.folderPath && { ...entry, sourceFolder: entry.folderPath });
+      if (mapping) {
+        Object.assign(row, { outputMode: 'source-children', sourceRoot: mapping.sourceRoot, sourceFolder: mapping.sourceFolder,
+          motherPath: mapping.motherPath, motherPaths: mapping.motherPaths || [mapping.motherPath], folderName: path.join(mapping.sourceFolder, '子图') });
         await validateImageFolderMapping(row);
-        if (folders.has(folderKey(row.sourceFolder))) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
-        folders.add(folderKey(row.sourceFolder)); imported.push(row);
+        if (rows.some(other => other.id !== entry.overwriteId && other.outputMode === 'source-children' &&
+            other.sourceFolder && pathKey(other.sourceFolder) === pathKey(row.sourceFolder))) {
+          throw new Error('已有任务绑定了这个类型目录，请重新预览后选择覆盖或跳过。');
+        }
       }
-      this.assertOpen();
-      const ids = imported.map(row => row.id), previousRows = this.state.rows, previousImports = this.state.imageFolderImports;
-      this.state.rows = [...previousRows, ...imported];
-      this.state.imageFolderImports = [...previousImports, { id: previewId, ids, createdAt: now() }];
-      try { this.changed(); } catch (error) { this.state.rows = previousRows; this.state.imageFolderImports = previousImports; throw error; }
-      return { importedIds: ids, importedCount: ids.length };
-    });
+      if (historyKey === 'imageBatchImports') {
+        const automatic = Boolean(entry.autoDescribe) && !row.referencePrompt.trim();
+        row.batchImport = { id: previewId, excelRow: entry.excelRow, autoDescribe: automatic,
+          instructions: String(entry.describeInstructions || ''), status: automatic ? 'pending' : 'skipped', error: '' };
+      }
+      if (index < 0) rows.push(row); else rows[index] = row;
+      imported.push(row);
+    }
+    this.assertOpen();
+    // A description request can update a row while file validation is pending.
+    for (const entry of entries.filter(item => item.overwriteId)) {
+      const row = this.state.rows.find(item => item.id === entry.overwriteId);
+      const target = row && this.imageImportTarget(row);
+      if (!target || target.busy || target.revision !== entry.overwriteRevision || entry.values.count < target.minimumCount) {
+        throw new Error('已有任务在导入期间发生变化，请重新预览。');
+      }
+    }
+    const record = { id: previewId, ids: imported.map(row => row.id),
+      overwrittenCount: entries.filter(entry => entry.overwriteId).length, createdAt: now() };
+    const previousRows = this.state.rows;
+    this.state.rows = rows;
+    this.state[historyKey] = [...history, record];
+    try { this.changed(); } catch (error) { this.state.rows = previousRows; this.state[historyKey] = history; throw error; }
+    return { record, existing: false };
   }
 
-  // Called only with the native dialog's validated, cached workbook preview.
+  // Native IPC owns the preview token and re-scans selected entries before submission.
+  async importImageFolderBatch(previewId, entries) {
+    const { record } = await this.serializeSubmission(() => this.saveImageImport(previewId, entries, 'imageFolderImports'));
+    return { importedIds: [...record.ids], importedCount: record.ids.length, overwrittenCount: record.overwrittenCount || 0 };
+  }
+
   async importImageBatch(previewId, entries) {
     this.assertOpen();
     if (this.imageImportTasks.has(previewId)) return this.imageImportTasks.get(previewId);
     const task = (async () => {
-      const created = await this.serializeSubmission(async () => {
-        this.assertOpen();
-        const previous = this.state.imageBatchImports.find(item => item.id === previewId);
-        if (previous) return { ids: previous.ids, existing: true };
-        if (typeof previewId !== 'string' || !previewId || !Array.isArray(entries) || !entries.length || entries.length > 500 || entries.some(entry => entry.errors?.length)) throw new Error('导入预览无效，请重新选择 Excel。');
-        const codes = new Set(this.state.rows.map(row => imageBatchCodeKey(row.code)));
-        const folders = new Set(this.state.rows.filter(row => row.outputMode === 'source-children').map(row => process.platform === 'win32' ? path.resolve(row.sourceFolder).toLowerCase() : path.resolve(row.sourceFolder)));
-        const imported = [];
-        for (const entry of entries) {
-          const values = entry.values || {};
-          const code = String(values.code || '').trim();
-          if (!code || codes.has(imageBatchCodeKey(code))) throw new Error(`编号 ${code || '（空）'} 已存在或无效，请重新预览。`);
-          codes.add(imageBatchCodeKey(code));
-          const row = normalizedRow({ ...values, id: uid(), code });
-          if (entry.outputMapping) {
-            const mapping = entry.outputMapping;
-            Object.assign(row, { outputMode: 'source-children', sourceRoot: mapping.sourceRoot, sourceFolder: mapping.sourceFolder, motherPath: mapping.motherPath, motherPaths: mapping.motherPaths || [mapping.motherPath], folderName: path.join(mapping.sourceFolder, '子图') });
-            await validateImageFolderMapping(row);
-            const key = process.platform === 'win32' ? path.resolve(row.sourceFolder).toLowerCase() : path.resolve(row.sourceFolder);
-            if (folders.has(key)) throw new Error('已有任务绑定了这个类型目录，请编辑原任务或重新预览。');
-            folders.add(key);
-          }
-          const automatic = Boolean(entry.autoDescribe) && !row.referencePrompt.trim();
-          row.batchImport = { id: previewId, excelRow: entry.excelRow, autoDescribe: automatic,
-            instructions: String(entry.describeInstructions || ''), status: automatic ? 'pending' : 'skipped', error: '' };
-          imported.push(row);
-        }
-        const previousRows = this.state.rows;
-        const previousImports = this.state.imageBatchImports;
-        const ids = imported.map(row => row.id);
-        this.state.rows = [...previousRows, ...imported];
-        this.state.imageBatchImports = [...previousImports, { id: previewId, ids, createdAt: now() }];
-        try { this.changed(); } catch (error) { this.state.rows = previousRows; this.state.imageBatchImports = previousImports; throw error; }
-        return { ids, existing: false };
-      });
-      if (!created.existing) await this.retryImageBatchDescribe(created.ids);
-      return this.imageBatchImportResult(created.ids);
+      const { record, existing } = await this.serializeSubmission(() => this.saveImageImport(previewId, entries, 'imageBatchImports'));
+      if (!existing) await this.retryImageBatchDescribe(record.ids);
+      return this.imageBatchImportResult(record);
     })();
     this.imageImportTasks.set(previewId, task);
     try { return await task; } finally { this.imageImportTasks.delete(previewId); }

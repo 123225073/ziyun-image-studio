@@ -1,3 +1,4 @@
+import { planImageImport } from '../shared/image-import-selection.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -49,11 +50,11 @@ test('rows resolve local relative files and folders, preview defaults, increment
  assert.equal(parsed.rows[2].values.templateId,'');assert.deepEqual(parsed.rows[2].values.sourcePaths,[]);assert.deepEqual(existingRows,before);
 });
 
-test('invalid values, code aliases and missing images remain row errors and do not count as reverse requests',async t=>{
+test('invalid values and missing images remain row errors while code aliases can be renamed',async t=>{
  const {dir,file}=await fixture(t);await fs.writeFile(path.join(dir,'false.png'),'not an image');
  await book(file,[{code:'A1.',name:'重复编号'},{name:'坏参数',count:1.5,ratio:'2:3',resolution:'8K',template:'不存在',folderName:'../上层'},{name:'无图反推',autoDescribe:'X'},{name:'不存在',sourceInput:'missing.png',autoDescribe:'X'},{name:'假图片',sourceInput:'false.png'},{name:'非法标志',autoDescribe:'YES'}]);
  const parsed=await parseImageBatchWorkbook(file,{existingRows:[{code:'a01'}],settings});
- assert.equal(parsed.invalidCount,6);assert.equal(parsed.reverseCount,0);assert.match(parsed.rows[0].errors.join(' '),/已存在/);
+ assert.equal(parsed.invalidCount,5);assert.equal(parsed.reverseCount,0);assert.equal(planImageImport(parsed.rows,[{code:'A01'}])[0].finalCode,'A1_2');
  assert.match(parsed.rows[1].errors.join(' '),/生成数量/);assert.match(parsed.rows[1].errors.join(' '),/图片比例/);assert.match(parsed.rows[1].errors.join(' '),/分辨率/);assert.match(parsed.rows[1].errors.join(' '),/项目规范/);assert.match(parsed.rows[1].errors.join(' '),/子目录/);
  assert.match(parsed.rows[2].errors.join(' '),/需要填写/);assert.match(parsed.rows[3].errors.join(' '),/不存在/);assert.ok(parsed.rows[4].errors.length);assert.match(parsed.rows[5].errors.join(' '),/仅填写 X/);
 });
@@ -101,7 +102,7 @@ test('optional export location maps a type folder to its mother and child output
  const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.validCount,1);assert.equal(parsed.reverseCount,1);
  const row=parsed.rows[0],realTypeDir=await fs.realpath(typeDir);assert.equal(row.outputLocation,'原目录子图');assert.equal(row.outputMapping.outputMode,'source-children');assert.equal(row.outputMapping.outputPath,path.join(realTypeDir,'子图'));assert.equal(row.values.sourceMode,'single');assert.deepEqual([...row.values.sourcePaths].sort(),['母图.png','母图2.png'].map(name=>path.join(realTypeDir,name)).sort());assert.equal(row.values.referenceMode,'all');assert.equal(row.values.folderName,row.outputMapping.outputPath);
  assert.equal('outputMode' in row.values,false,'映射不混入普通行字段');
- const duplicate=await parseImageBatchWorkbook(file,{settings,existingRows:[{code:'Z99',outputMode:'source-children',sourceFolder:realTypeDir}]});assert.equal(duplicate.invalidCount,1);assert.match(duplicate.rows[0].errors.join(' '),/已导入/);
+ const duplicate=await parseImageBatchWorkbook(file,{settings,existingRows:[{code:'Z99',outputMode:'source-children',sourceFolder:realTypeDir}]});assert.equal(duplicate.invalidCount,0);assert.equal(planImageImport(duplicate.rows,[{code:'Z99',folderKey:duplicate.rows[0].folderKey}])[0].action,'skip');
  await book(file,[{name:'旧12列',sourceInput:'C01-素材类型'}],(_,sheet)=>{sheet.spliceColumns(13,1)});
  const legacy=await parseImageBatchWorkbook(file,{settings});assert.equal(legacy.validCount,1);assert.equal(legacy.rows[0].outputMapping,undefined);assert.equal(legacy.rows[0].values.sourcePaths.length,3);assert.equal(legacy.rows[0].values.referenceMode,'rotate');
 });

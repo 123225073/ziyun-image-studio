@@ -36,12 +36,17 @@ try{
  await launch();await call('updateSettings',{outputDir:normalOutput,autoExport:false});await call('saveRow',{code:'Z01',name:'原有任务',userPrompt:'保留内容'});
  await page.getByLabel('用户要求',{exact:true}).fill('未保存内容也要保留');
  await select(sourceRoot);await page.getByTestId('image-folder-import').click();await folderDialog().getByRole('button',{name:'选择大文件夹',exact:true}).click();await folderDialog().locator('.folder-import-table tbody tr').first().waitFor();
- assert.equal(await folderDialog().locator('tbody tr').count(),4);assert.equal(await folderDialog().locator('tbody tr.invalid').count(),1);assert.equal(await folderDialog().getByRole('button',{name:/^确认导入/}).isDisabled(),true);assert.equal((await call('getState')).rows.length,1);assert.equal(requests.length,0);
+ assert.equal(await folderDialog().locator('tbody tr').count(),4);assert.equal(await folderDialog().locator('tbody tr.invalid').count(),1);assert.equal(await folderDialog().getByRole('button',{name:'确认导入 3 行',exact:true}).isEnabled(),true);assert.equal((await call('getState')).rows.length,1);assert.equal(requests.length,0);
  await page.screenshot({path:path.join(fixture,'folder-errors.png')});
+ await folderDialog().getByRole('checkbox',{name:/导入 D01/}).uncheck();
+ await folderDialog().getByRole('button',{name:'确认导入 2 行',exact:true}).click();
+ await folderDialog().getByRole('heading',{name:'已新增 2 行任务',exact:true}).waitFor();
+ await folderDialog().getByRole('button',{name:'完成',exact:true}).click();
  await fs.writeFile(path.join(folders[2],'母图.png'),png);
- await folderDialog().getByRole('button',{name:'重新选择大文件夹',exact:true}).click();await folderDialog().getByRole('button',{name:'确认导入 4 行',exact:true}).waitFor();
+ await page.getByTestId('image-folder-import').click();
+ await folderDialog().getByRole('button',{name:'选择大文件夹',exact:true}).click();await folderDialog().getByRole('button',{name:'确认导入 2 行',exact:true}).waitFor();
  assert.equal(await folderDialog().locator('tbody tr.invalid').count(),0);assert.equal(await folderDialog().locator('.image-import-table-scroll').evaluate(element=>element.scrollWidth<=element.clientWidth),true);
- await page.screenshot({path:path.join(fixture,'folder-preview.png')});await folderDialog().getByRole('button',{name:'确认导入 4 行',exact:true}).click();await folderDialog().getByRole('heading',{name:'已新增 4 行任务',exact:true}).waitFor();await folderDialog().getByRole('button',{name:'完成',exact:true}).click();
+ await page.screenshot({path:path.join(fixture,'folder-preview.png')});await folderDialog().getByRole('button',{name:'确认导入 2 行',exact:true}).click();await folderDialog().getByRole('heading',{name:'已新增 2 行任务',exact:true}).waitFor();await folderDialog().getByRole('button',{name:'完成',exact:true}).click();
  assert.equal(await page.getByLabel('用户要求',{exact:true}).inputValue(),'未保存内容也要保留');assert.equal(requests.length,0);let state=await call('getState');assert.equal(state.jobs.length,0);assert.equal(state.rows.length,5);
  const imported=state.rows.filter(row=>row.outputMode==='source-children');assert.deepEqual(imported.map(row=>row.code),['A01','B01','C01','D01']);for(const row of imported){assert.deepEqual(row.sourcePaths,row.motherPaths);assert.equal(row.referenceMode,'all');assert.equal(row.folderName,path.join(row.sourceFolder,'子图'))}assert.equal(imported[0].sourcePaths.length,2);assert.equal(imported[3].sourcePaths.length,2);assert.equal(imported[0].motherPath,path.join(folders[0],'母图.png'));assert.equal(state.settings.outputDir,normalOutput);
  await page.getByRole('button',{name:'保存本行',exact:true}).click();await waitState(current=>current.rows[0].userPrompt==='未保存内容也要保留');
@@ -66,6 +71,13 @@ try{
  const second=state.rows.find(row=>row.code==='B01');await call('saveRow',{...second,userPrompt:'第二类生成'});await call('updateSettings',{autoExport:true});await page.getByLabel('编辑 第二类',{exact:true}).click();holdNext=true;await call('enqueueImages',[second.id]);const responseDeadline=Date.now()+20000;while(!releaseResponse&&Date.now()<responseDeadline)await new Promise(resolve=>setTimeout(resolve,30));assert.ok(releaseResponse,'图片请求应到达本机模拟服务');const failedOutput=path.join(folders[1],'子图');await fs.writeFile(failedOutput,'isolated output conflict');releaseResponse();
  state=await waitState(current=>current.jobs.some(job=>job.rowId===second.id&&job.exportError));assert.equal(state.jobs.find(job=>job.rowId===second.id).status,'succeeded');await page.locator('.job-export-error').waitFor();await fs.unlink(failedOutput);await page.getByRole('button',{name:'重试导出',exact:true}).click();state=await waitState(current=>current.jobs.find(job=>job.rowId===second.id)?.exportedPath);assert.equal(state.jobs.find(job=>job.rowId===second.id).exportError,'');assert.equal(path.dirname(state.jobs.find(job=>job.rowId===second.id).exportedPath),failedOutput);
  assert.equal(requests.length,2,'重试导出不得再次生图');assert.ok(requests.every(request=>request.path==='/v1/images/edits'));assert.equal(state.jobs.length,2);assert.deepEqual(await fs.readdir(normalOutput),[]);
+ await select(sourceRoot);await page.getByTestId('image-folder-import').click();await folderDialog().getByRole('button',{name:'选择大文件夹',exact:true}).click();
+ await folderDialog().getByRole('combobox',{name:'处理 B01 · 第二类',exact:true}).selectOption('overwrite');
+ await folderDialog().getByRole('button',{name:'确认导入 1 行',exact:true}).click();
+ await folderDialog().getByRole('heading',{name:'已新增 0 行 · 已覆盖 1 行',exact:true}).waitFor();
+ state=await call('getState');assert.equal(state.rows.find(row=>row.code==='B01').id,second.id);
+ assert.equal(state.rows.find(row=>row.code==='B01').userPrompt,'');
+ assert.equal(path.dirname(state.jobs.find(job=>job.rowId===second.id).exportedPath),failedOutput);
  await close();await launch();state=await call('getState');assert.equal(state.rows.filter(row=>row.outputMode==='source-children').length,5);assert.equal(state.settings.outputDir,normalOutput);assert.equal(requests.length,2);assert.deepEqual(errors,[]);
  await fs.writeFile(path.join(fixture,'result.json'),JSON.stringify({passed:true,importedTypes:5,providerCalls:requests.length,exported:state.jobs.map(job=>job.exportedPath),normalOutputUnchanged:true,errors},null,2));console.log(`IMAGE_FOLDER_UI_PASS ${fixture}`);
 }finally{releaseResponse?.();await close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve))}

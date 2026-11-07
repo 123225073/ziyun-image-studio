@@ -24,7 +24,7 @@
 .image-import-table-scroll{overflow:auto;max-height:48vh;border:1px solid #dce6df;border-radius:9px}
 .image-import-table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:800px;font-size:12px}
 .image-import-table th{position:sticky;top:0;background:#eff5f1;padding:11px 12px;color:#4c6759;text-align:left;font-weight:600;z-index:1}
-.image-import-table th:nth-child(1){width:58px}.image-import-table th:nth-child(2){width:125px}.image-import-table th:nth-child(3){width:21%}.image-import-table th:nth-child(4){width:19%}.image-import-table th:nth-child(5){width:20%}
+.image-import-table th:nth-child(2){width:68px}.image-import-table th:nth-child(3){width:118px}.image-import-table th:nth-child(4){width:18%}.image-import-table th:nth-child(5){width:17%}.image-import-table th:nth-child(6){width:18%}
 .image-import-table td{padding:12px;vertical-align:top;border-top:1px solid #e4ebe6;line-height:1.7;overflow-wrap:anywhere}
 .image-import-table td>p{margin:3px 0 0}.image-import-table td>strong{color:var(--green)}
 .image-import-table small{display:block;color:#7a8c81;font-size:11px;margin-top:5px}
@@ -33,6 +33,16 @@
 .image-import-copy{white-space:pre-wrap;max-height:180px;overflow:auto;margin:7px 0 0;font-size:11px;line-height:1.7}
 .image-import-valid{display:inline-flex;gap:5px;align-items:center;color:#247357;font-size:11px}
 .image-import-row-errors{margin:0;padding-left:15px;color:#ae4729;font-size:11px}
+.image-import-selection{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;margin:12px 0;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#f5faf7;font-size:13px}
+.image-import-selection p{margin:4px 0 0;color:#5b7466;font-size:12px}
+.image-import-selection-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.image-import-selection-actions span{font-weight:600;color:var(--green);margin-right:4px}
+.image-import-selection-actions .button{font-size:12px;min-height:30px;padding:5px 10px}
+.image-import-table .image-import-check-cell,.folder-import-table .image-import-check-cell{width:52px;text-align:center;padding-inline:6px}
+.image-import-check-cell input{margin:2px 0;accent-color:var(--green)}
+.image-import-conflict{display:grid;gap:4px;color:#875b22}
+.image-import-conflict select{width:100%;min-width:0;font-size:12px;padding:5px}
+.image-import-conflict small{margin:0}
 .image-import-table .image-import-row-warning{color:#976719}
 .image-import-result{text-align:center;padding:24px 10px;color:var(--green)}
 .image-import-result h3{color:#20362a;margin:13px 0 8px;font-size:19px}.image-import-result>p{color:#718579;font-size:13px;line-height:1.8}

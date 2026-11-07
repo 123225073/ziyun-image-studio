@@ -208,6 +208,7 @@ async function setup(){
     const plan=await scanImageFolderImport(folder,{existingRows:service.state.rows,settings:service.state.settings});
     for(const row of plan.rows)if(!row.errors.length)for(const file of row.motherPaths||[row.motherPath])if(file)selectedPaths.add(file);
     const previewId=randomUUID();
+    plan.targets=service.state.rows.map(row=>service.imageImportTarget(row));
     imageFolderPreviews.set(previewId,plan);
     if(imageFolderPreviews.size>20)imageFolderPreviews.delete(imageFolderPreviews.keys().next().value);
     return {ok:true,value:{...plan,previewId}};
@@ -216,12 +217,15 @@ async function setup(){
     const previewId=args[0];
     if(service.state.imageFolderImports?.some(item=>item.id===previewId))return {ok:true,value:await service.importImageFolderBatch(previewId,[])};
     const preview=imageFolderPreviews.get(previewId);
-    if(!preview||preview.errors.length||preview.invalidCount||!preview.rowCount)throw new Error('文件夹预览不存在或有未处理的问题，请重新选择目录。');
+    const {selectImageImportEntries}=await import('../shared/image-import-selection.mjs');
+    const expected=selectImageImportEntries(preview,args[1]);
     const {scanImageFolderImport}=await import('./image-folder-import.mjs');
     const current=await scanImageFolderImport(preview.rootPath,{existingRows:service.state.rows,settings:service.state.settings});
-    if(current.errors.length||current.invalidCount||JSON.stringify(current.rows)!==JSON.stringify(preview.rows))throw new Error('母图、目录内容或任务编号已变化，请重新预览再导入。');
-    const result=await service.importImageFolderBatch(previewId,current.rows);
-    for(const row of current.rows)for(const file of row.motherPaths||[row.motherPath])if(file)selectedPaths.add(file);
+    current.targets=service.state.rows.map(row=>service.imageImportTarget(row));
+    const entries=selectImageImportEntries(current,args[1]);
+    if(JSON.stringify(entries)!==JSON.stringify(expected))throw new Error('所选素材、任务配置或编号已变化，请重新预览。');
+    const result=await service.importImageFolderBatch(previewId,entries);
+    for(const row of entries)for(const file of row.motherPaths||[row.motherPath])if(file)selectedPaths.add(file);
     return {ok:true,value:result};
    }
    if(method==='downloadImageBatchTemplate'){
@@ -236,6 +240,7 @@ async function setup(){
     const {parseImageBatchWorkbook}=await import('./image-batch-import.mjs');
     const plan=await parseImageBatchWorkbook(input.filePaths[0],{existingRows:service.state.rows,settings:service.state.settings,resolveSource:file=>service.prepareReferenceDrop([file])});
     const previewId=randomUUID();
+    plan.targets=service.state.rows.map(row=>service.imageImportTarget(row));
     imageBatchPreviews.set(previewId,plan);
     if(imageBatchPreviews.size>20)imageBatchPreviews.delete(imageBatchPreviews.keys().next().value);
     return {ok:true,value:{...plan,previewId}};
@@ -245,12 +250,15 @@ async function setup(){
     // A retry of a successful submission returns that same saved batch.
     if(service.state.imageBatchImports.some(item=>item.id===previewId))return {ok:true,value:await service.importImageBatch(previewId,[])};
     const preview=imageBatchPreviews.get(previewId);
-    if(!preview||preview.errors.length||preview.invalidCount||!preview.rowCount)throw new Error('导入预览不存在或存在错误，请重新选择 Excel。');
+    const {selectImageImportEntries}=await import('../shared/image-import-selection.mjs');
+    const expected=selectImageImportEntries(preview,args[1]);
     const {parseImageBatchWorkbook}=await import('./image-batch-import.mjs');
     const current=await parseImageBatchWorkbook(preview.filePath,{existingRows:service.state.rows,settings:service.state.settings,resolveSource:file=>service.prepareReferenceDrop([file])});
-    if(current.errors.length||current.invalidCount||JSON.stringify(current.rows)!==JSON.stringify(preview.rows))throw new Error('Excel、素材或默认设置已变化，请重新预览再导入。');
-    const result=await service.importImageBatch(previewId,current.rows);
-    for(const entry of current.rows)for(const file of entry.values.sourcePaths)selectedPaths.add(file);
+    current.targets=service.state.rows.map(row=>service.imageImportTarget(row));
+    const entries=selectImageImportEntries(current,args[1]);
+    if(JSON.stringify(entries)!==JSON.stringify(expected))throw new Error('所选素材、任务配置或编号已变化，请重新预览。');
+    const result=await service.importImageBatch(previewId,entries);
+    for(const entry of entries)for(const file of entry.values.sourcePaths)selectedPaths.add(file);
     return {ok:true,value:result};
    }
    if(method==='retryImageBatchDescribe')return {ok:true,value:await service.retryImageBatchDescribe(args[0])};

@@ -3,7 +3,7 @@ import {nextImageRowCode} from './image-rows.mjs';
 export const IMAGE_BATCH_SHEET = '任务';
 export const IMAGE_BATCH_LIMITS = Object.freeze({fileBytes:10*1024*1024,expandedBytes:32*1024*1024,archiveEntries:200,sheets:5,rows:500,columns:13,cellCharacters:12000,totalCharacters:2000000});
 export const IMAGE_BATCH_COLUMNS = Object.freeze([
-  {key:'code',title:'编号',width:14,defaultText:'沿用最后一行分类递增',help:'可留空自动编号，例如 A01、A02。已存在的编号不能重复。'},
+  {key:'code',title:'编号',width:14,defaultText:'沿用最后一行分类递增',help:'可留空自动编号。编号重复时，可在预览中跳过、加后缀新增，或覆盖唯一对应的已有任务配置。'},
   {key:'name',title:'类型名称',width:20,defaultText:'未命名类型',help:'填写易识别的素材类型名称，可留空后在应用里补充。'},
   {key:'sourceInput',title:'参考素材路径',width:42,defaultText:'导入后再选择',help:'本地图片或图片文件夹。可用绝对路径，或相对本 Excel 所在文件夹的路径；不需要把图片嵌入 Excel。'},
   {key:'referencePrompt',title:'参考提示词',width:54,defaultText:'空白',help:'已填写时优先保留，绝不自动反推覆盖。单元格内可以换行。'},
@@ -24,8 +24,8 @@ export const isLocalImageBatchPath = value => {
   return !/[\u0000-\u001f]/.test(cleaned)&&!/^\w+:\/\//.test(cleaned)&&!/^[/\\]{2}/.test(cleaned);
 };
 export const imageBatchCodeKey = value => {
-  const valueText=text(value).toUpperCase(),match=valueText.match(/^([A-Z]+)(\d+)[.。．]?$/);
-  return match?`${match[1]}${BigInt(match[2])}`:valueText;
+  const valueText=text(value).toUpperCase(),match=valueText.match(/^([A-Z]+)(\d+)(?:[.。．]|(_\d+))?$/);
+  return match?`${match[1]}${BigInt(match[2])}${match[3]||''}`:valueText;
 };
 
 // Pure validation: no provider calls, writes, or file access occur here.
@@ -35,7 +35,6 @@ export function normalizeImageBatchRow(raw,{existingRows=[],settings={}}={}) {
   let code=get('code');
   if(!code){try{code=nextImageRowCode(existingRows)}catch(error){errors.push(error.message)}}
   if(!code||code.length>40||/[\u0000-\u001f]/.test(code))errors.push('编号应为 1–40 个字符，不能含换行或控制字符。');
-  if(code&&existingRows.some(row=>imageBatchCodeKey(row.code)===imageBatchCodeKey(code)))errors.push(`编号 ${code} 已存在，请修改或留空自动编号。`);
   const name=get('name');if(name.length>200)errors.push('类型名称不能超过 200 个字符。');
   const referencePrompt=get('referencePrompt'),userPrompt=get('userPrompt'),describeInstructions=get('describeInstructions');
   for(const [label,value] of [['参考提示词',referencePrompt],['用户要求',userPrompt],['反推要求',describeInstructions]])if(value.length>IMAGE_BATCH_LIMITS.cellCharacters)errors.push(`${label}不能超过 ${IMAGE_BATCH_LIMITS.cellCharacters} 个字符。`);

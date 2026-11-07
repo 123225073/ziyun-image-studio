@@ -2,7 +2,7 @@ export const rowCategory = code => String(code || '').trim().match(/^[a-z]+/i)?.
 // Continue the last row in the user's manual order. Sorting and filtering are
 // presentation only and must not change which classification is continued.
 export function nextImageRowCode(rows = []) {
-  const parts = String(rows.at(-1)?.code || '').trim().match(/^([a-z]*)(\d+)[.。．]?$/i);
+  const parts = String(rows.at(-1)?.code || '').trim().match(/^([a-z]*)(\d+)(?:[.。．]|_\d+)?$/i);
   const prefix = parts?.[1]?.toUpperCase() || 'A';
   const width = Math.max(2, parts?.[2]?.length || 0);
   let number = parts ? BigInt(parts[2]) + 1n : 1n;

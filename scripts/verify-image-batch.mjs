@@ -25,6 +25,13 @@ await writeBook(workbookPath,[
 ]);
 await writeBook(failedPath,[{name:'失败后恢复',sourceInput:'素材/参考.png',autoDescribe:'X'}]);
 await writeBook(invalidPath,[{name:'公式禁止',referencePrompt:{formula:'"禁止采用缓存"',result:'禁止采用缓存'}}]);
+const mixedPath=path.join(fixture,'部分导入和编号冲突.xlsx');
+await writeBook(mixedPath,[
+ {code:'B01',name:'覆盖原行',userPrompt:'导入的新配置'},
+ {code:'B02',name:'加后缀'},
+ {code:'B03',name:'跳过反推行',sourceInput:'素材/参考.png',autoDescribe:'X'},
+ {code:'B99',name:'无效路径',sourceInput:'找不到.png'},
+]);
 const requests=[],unexpected=[];let rejectNext=false;
 const server=http.createServer(async(req,res)=>{
  let text='';for await(const part of req)text+=part;
@@ -85,6 +92,19 @@ try{
  assert.equal(requests.length,3);current=await call('getState');assert.equal(current.rows.length,5);assert.equal(current.rows[4].referencePrompt,'本地模拟参考描述 3');assert.equal(current.rows[4].batchImport.status,'done');assert.equal(current.jobs.length,0);
  await dialog().getByRole('button',{name:'完成',exact:true}).click();await close();await launch();await openImporter();assert.equal(await dialog().locator('.image-import-saved-failures').count(),0);assert.equal((await call('getState')).rows.length,5);assert.equal(requests.length,3);
  await page.setViewportSize({width:1050,height:800});assert.equal(await dialog().evaluate(element=>{const box=element.getBoundingClientRect();return box.x>=0&&box.right<=innerWidth&&box.y>=0&&box.bottom<=innerHeight}),true);await page.screenshot({path:path.join(fixture,'excel-narrow.png')});
+ await choose(mixedPath);
+ assert.equal(await dialog().getByRole('checkbox',{name:'导入 B99 · 无效路径',exact:true}).isDisabled(),true);
+ await dialog().getByRole('button',{name:'清空选择',exact:true}).click();
+ assert.equal(await dialog().getByRole('button',{name:'确认导入',exact:true}).isDisabled(),true);
+ await dialog().getByRole('button',{name:'全选可新增',exact:true}).click();
+ await dialog().getByRole('combobox',{name:'处理 B01 · 覆盖原行',exact:true}).selectOption('overwrite');
+ await dialog().getByRole('checkbox',{name:'导入 B03 · 跳过反推行',exact:true}).uncheck();
+ await dialog().getByText('B02_2',{exact:true}).waitFor();
+ await page.screenshot({path:path.join(fixture,'excel-selection.png')});
+ await dialog().getByRole('button',{name:'确认导入 2 行',exact:true}).click();
+ await dialog().getByRole('heading',{name:'已新增 1 行 · 已覆盖 1 行',exact:true}).waitFor();
+ current=await call('getState');assert.equal(current.rows.length,6);assert.equal(current.rows[0].id,original.id);
+ assert.equal(current.rows[0].userPrompt,'导入的新配置');assert.equal(current.rows.at(-1).code,'B02_2');assert.equal(requests.length,3);
  assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);
  await fs.writeFile(path.join(fixture,'result.json'),JSON.stringify({passed:true,providerCalls:requests.length,rows:current.rows.length,imageJobs:current.jobs.length,template,errors},null,2));
  console.log(`IMAGE_EXCEL_UI_PASS ${fixture}`);

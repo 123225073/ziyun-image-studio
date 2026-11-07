@@ -83,7 +83,6 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
   if(!headers.size)errors.push('“任务”表第一行需要模板中的中文列标题。');
   const occupied=existingRows.map(row=>({code:row.code}));
   const folderKey=file=>process.platform==='win32'?path.resolve(file).toLowerCase():path.resolve(file);
-  const occupiedFolders=new Set(existingRows.filter(row=>row.outputMode==='source-children'&&row.sourceFolder).map(row=>folderKey(row.sourceFolder)));
   for(let excelRow=2;excelRow<=sheet.rowCount;excelRow++){
     const raw={},cellErrors=[];let hasContent=false;
     for(const [column,key]of headers){
@@ -107,9 +106,7 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
           let source;
           if(row.outputLocation==='原目录子图'){
             row.outputMapping=await inspectImageTypeFolder(row.resolvedSourcePath);
-            const key=folderKey(row.outputMapping.sourceFolder);
-            if(occupiedFolders.has(key))throw new Error('这个类型目录已导入或在本表中重复，请编辑已有任务或移除重复行。');
-            occupiedFolders.add(key);
+            row.folderKey=folderKey(row.outputMapping.sourceFolder);
             const mothers=[];
             for(const motherPath of row.outputMapping.motherPaths){
               const resolved=await resolveSource(motherPath);
@@ -126,7 +123,7 @@ export async function parseImageBatchWorkbook(filePath,{existingRows=[],settings
         }catch(error){row.errors.push(error.message||'无法读取参考素材。');}
       }
     }
-    if(row.values.code)occupied.push({code:row.values.code});
+    if(row.values.code&&!row.errors.length)occupied.push({code:row.values.code});
     rows.push(row);
   }
   if(!rows.length)warnings.push('“任务”表没有填写任务；“说明”和“示例”表不会导入。');
