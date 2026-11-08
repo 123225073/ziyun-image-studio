@@ -4,15 +4,15 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 
 ## 下载安装
 
-当前版本为 0.5.3。Windows 已完成本地打包、安装与功能验收；两种 Mac 版本已在 GitHub Actions 对应平台完成构建、安装及功能验收。发布附件均已下载核对大小和 SHA-256。
+当前版本为 0.5.4。Windows 已完成本地打包、安装与功能验收；两种 Mac 版本已在 GitHub Actions 对应平台完成构建、安装及功能验收。发布附件均已下载核对大小和 SHA-256。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.3/ZiyunStudio-Setup-0.5.3.exe) |
-| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.3/ZiyunStudio-0.5.3-mac-arm64.dmg) |
-| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.3/ZiyunStudio-0.5.3-mac-x64.dmg) |
+| Windows 64 位 | [Windows 安装包（.exe）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.4/ZiyunStudio-Setup-0.5.4.exe) |
+| Mac，Apple 芯片（M 系列） | [Mac Apple 芯片安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.4/ZiyunStudio-0.5.4-mac-arm64.dmg) |
+| Mac，Intel 芯片 | [Mac Intel 安装包（.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.4/ZiyunStudio-0.5.4-mac-x64.dmg) |
 
-[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.3/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.5.3.zip)
+[统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/download/v0.5.4/SHA256SUMS.txt) · [MIT 源码（ZIP）](https://github.com/123225073/ziyun-image-studio/archive/refs/tags/v0.5.4.zip)
 
 ## 功能
 
@@ -23,6 +23,10 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 - **语音合成（0.2.0）**支持豆包与 MiniMax 独立连接、配音预设、批量文案、试听和音频导出。已生成配音可以直接用于混剪，重复画面版本复用同一音频。
 - **批量混剪（0.2.0）**支持分类目录导入、时间窗缩略图、可选视觉识别与语义选片、镜头替换和锁定，以及固定片头原声保留。新版本安装包的验证与发布状态以对应 Release 为准。
 - **模型服务设置（0.2.1）**按文字与识图、图片生成、视频生成、语音合成分页管理。选择平台后自动填写接入方式，提供获取密钥、开通、音色和用量入口；MiniMax 国内与国际账号分别配置。已有连接、密钥和默认服务自动保留。
+
+## 0.5.4 生图任务中心与版本管理
+
+从顶部「任务中心」查看不同素材类型的生图队列、失败原因和历次尝试，支持批量重跑或移除占位。点击工具名称旁的版本号可核对运行版本和最新发布版。报错时可从任务详情复制诊断信息。
 
 ## 0.5.3 选择要导入的图片任务
 
