@@ -241,6 +241,18 @@ function imageSize(payload, provider, media) {
   return imageSizes[ratio][index];
 }
 async function images(payload, context) {
+  let requestInput;
+  try {
+    requestInput = await imageRequestInput(payload, context);
+  } catch (error) {
+    error.imageStage = 'local-input';
+    throw error;
+  }
+  const { route, body, size } = requestInput;
+  const json=await request(context,route,body,{submit:true});
+  return parseImageResponse(json, size);
+}
+async function imageRequestInput(payload, context) {
   const paths=payload.referencePaths || []; if(paths.length>16) throw fail('一次图片编辑最多支持 16 张参考图。');
   const refs=[]; for(const p of paths) { throwAbort(context.signal); const m=await localMedia(p,20*MB); if(!['image/png','image/jpeg','image/webp'].includes(m.mime)) throw fail('图片编辑参考素材仅适配 PNG、JPEG、WebP，请先转换格式。'); refs.push(m); }
   const size=imageSize(payload,context.provider,refs[0]);
@@ -252,7 +264,9 @@ async function images(payload, context) {
     for(const [k,v] of Object.entries(fields)) body.append(k,String(v));
     refs.forEach((m,i)=>body.append(refs.length===1?'image':'image[]',new Blob([m.bytes],{type:m.mime}),`reference-${i+1}.${m.mime.split('/')[1]}`));
   }
-  const json=await request(context,route,body,{submit:true});
+  return { route, body, size };
+}
+function parseImageResponse(json, size) {
   const result=[];
   for(const item of Array.isArray(json.data)?json.data:[]) {
     if(!item || typeof item!=='object')continue;

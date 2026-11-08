@@ -6,6 +6,8 @@ const root=path.resolve(__dirname,'..');
 app.setName('子云影像工坊');
 if(process.env.ZIYUN_DATA_DIR)app.setPath('userData',path.resolve(process.env.ZIYUN_DATA_DIR));
 const dataDir=app.getPath('userData');
+const appVersion=app.getVersion();
+const appTitle=`子云影像工坊 v${appVersion}`;
 const imageBatchPreviews=new Map();
 const imageFolderPreviews=new Map();
 const imageOutputSelections=new Map();
@@ -104,10 +106,12 @@ async function setup(){
  const {scanMontageFolder}=await import('./montage-library.mjs');
  const {TTS_PROTOCOLS}=await import('../shared/speech.mjs');
  const {normalizeTimeline}=await import('../shared/timeline.mjs');
+ const {checkAppRelease,releasePage}=await import('./app-release.mjs');
  const {OAIREGBOX_BASE,OAIREGBOX_CONSOLE,oairegboxBase}=await import('../shared/oairegbox.mjs');
  const ffmpegPath=await resolveFfmpeg(app.isPackaged?process.resourcesPath:root,dataDir);
  const providerRunner=async(op,payload,context)=>{
   const [key]=await readProviderKeys(context.provider,context.provider.id);
+  if(op==='image'&&!key)throw Object.assign(new Error('当前生图连接没有可用的密钥，请在模型服务中重新保存。'),{code:'CREDENTIAL_STORAGE_KEY_MISSING'});
   return runProvider(op,payload,{...context,inspectDuration:(file,signal)=>mediaDuration(ffmpegPath,file,signal),provider:{...context.provider,key}});
  };
  const concatSpeech=async(files,output,options,signal)=>{
@@ -138,7 +142,10 @@ async function setup(){
   const input=process.env.ZIYUN_CONFIG_PIPE?require('node:net').createConnection(process.env.ZIYUN_CONFIG_PIPE):process.stdin;if(input!==process.stdin)input.setTimeout(15000,()=>input.destroy(new Error('本机配置通道超时。')));let text='';for await(const chunk of input){text+=chunk.toString();if(Buffer.byteLength(text)>131072){input.destroy();throw new Error('配置输入过大。');}}const config=JSON.parse(text);if(!Array.isArray(config.providers)||config.providers.length>8)throw new Error('配置格式错误。');for(const p of config.providers)await saveProvider(p);await service.updateSettings({bindings:config.bindings||{}});await service.close();process.stdout.write('CPA_CONFIGURED\n');app.exit(0);return;
  }
  const methods=new Set(['getState','reorderRows','saveRowCode','saveMontageSetup','createMontageDraft','reviewMontageCombinations','suggestMontageCombination','acceptMontageSuggestion','resolveMontageBindings','updateSettings','saveRow','deleteRow','deleteRows','importFiles','scanFolder','enqueueImages','enqueueVideo','enqueueMontage','enqueueSpeech','planMontage','editMontageShot','retryJobs','selectJobs','setPaused','exportJobs','saveFormula','describe','rewritePrompt','deleteFailedImages','archiveImages','saveTimeline','openTimeline','enqueueTimeline']);
- ipcMain.handle('studio:call',async(event,method,...args)=>{try{checkSender(event);if(method==='saveProvider')return {ok:true,value:await saveProvider(args[0])};if(method==='deleteProvider'){await removeProvider(args[0]);return {ok:true};}if(method==='fetchProviderModels'){
+ ipcMain.handle('studio:call',async(event,method,...args)=>{try{checkSender(event);if(method==='appInfo')return {ok:true,value:{version:appVersion,platform:process.platform,arch:process.arch}};
+   if(method==='checkAppRelease')return {ok:true,value:await checkAppRelease(appVersion,(url,options)=>net.fetch(url,options),globalThis.fetch)};
+   if(method==='openAppReleases'){await shell.openExternal(releasePage);return {ok:true};}
+   if(method==='saveProvider')return {ok:true,value:await saveProvider(args[0])};if(method==='deleteProvider'){await removeProvider(args[0]);return {ok:true};}if(method==='fetchProviderModels'){
     const draft=args[0] || {};
     const state=await service.getState();
     const saved=state.settings.providers.find(item=>item.id===draft.id);
@@ -356,7 +363,8 @@ async function setup(){
  });
  ipcMain.handle('studio:reveal',async(event,file)=>{checkSender(event);if(!file||!(await allowedPaths()).has(path.resolve(file).toLowerCase()))throw new Error('只允许打开项目中已登记的素材。');shell.showItemInFolder(path.resolve(file));});
  ipcMain.handle('studio:window',(event,action)=>{checkSender(event);if(action==='minimize')win.minimize();else if(action==='maximize')win.isMaximized()?win.unmaximize():win.maximize();else if(action==='close')win.close();});
- win=new BrowserWindow({width:1513,height:1035,minWidth:1050,minHeight:680,title:'子云影像工坊',backgroundColor:'#fafbfa',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:!app.isPackaged||process.env.ZIYUN_SMOKE==='1'}});
+ win=new BrowserWindow({width:1513,height:1035,minWidth:1050,minHeight:680,title:appTitle,backgroundColor:'#fafbfa',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:!app.isPackaged||process.env.ZIYUN_SMOKE==='1'}});
+ win.on('page-title-updated',event=>event.preventDefault());
  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(event,url)=>{if(url!==win.webContents.getURL())event.preventDefault();});
  win.once('ready-to-show',()=>win.show());const dev=process.env.ZIYUN_DEV_URL;if(dev){const u=new URL(dev);if(u.hostname!=='127.0.0.1')throw new Error('开发服务器仅允许本机地址。');await win.loadURL(dev);}else await win.loadFile(path.join(root,'dist','index.html'));
  win.on('close',event=>{if(!quitting){event.preventDefault();quitSafely();}});

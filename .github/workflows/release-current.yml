@@ -111,6 +111,10 @@ jobs:
       - name: Installed image row selection and deletion
         timeout-minutes: 4
         run: node scripts/verify-image-rows.mjs
+      - name: Installed image task center and version display
+        if: hashFiles('scripts/verify-image-task-center.mjs') != ''
+        timeout-minutes: 4
+        run: node scripts/verify-image-task-center.mjs
       - name: Installed mother image folders and child output
         timeout-minutes: 6
         run: node scripts/verify-image-folder.mjs

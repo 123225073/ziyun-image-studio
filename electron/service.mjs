@@ -874,20 +874,27 @@ export class StudioService {
     return this.state.jobs.filter(job => job.kind === 'image' && job.rowId === rowId && !job.archivedAt && !job.discardedAt);
   }
 
-  async deleteFailedImages(ids) {
+  async deleteFailedImages(ids, { includeQueued = false } = {}) {
     return this.serializeSubmission(() => {
       this.assertOpen();
       const targets = [...new Set(ids)].map(id => this.state.jobs.find(job => job.id === id));
       const chains = targets.map(job => {
-        if (!job || job.kind !== 'image' || job.archivedAt || job.discardedAt) throw new Error('失败占位已不在当前批次。');
+        if (!job || job.kind !== 'image' || job.archivedAt || job.discardedAt) throw new Error('图片占位已不在当前批次。');
         const chain = this.jobChain(job);
-        if (chain.some(item => !['failed', 'cancelled'].includes(item.status) || this.active.has(item.id))) {
-          throw new Error('只能删除明确失败的图片占位。');
+        if (chain.some(item => {
+          const queued = includeQueued && item.status === 'queued' && !item.startedAt;
+          return this.active.has(item.id) || (!queued && !['failed', 'cancelled'].includes(item.status)) ||
+            (includeQueued && (item.remoteId || item.result));
+        })) {
+          throw new Error(includeQueued ? '选中任务已开始执行、状态待确认，或仍有可恢复的结果。请刷新选择。' : '只能删除明确失败的图片占位。');
         }
         return chain;
       });
       const discardedAt = now();
-      for (const job of chains.flat()) Object.assign(job, {discardedAt, selected:false});
+      for (const job of new Set(chains.flat())) {
+        Object.assign(job, {discardedAt, selected:false});
+        if (job.status === 'queued') Object.assign(job, {status:'cancelled', finishedAt:discardedAt, updatedAt:discardedAt});
+      }
       this.changed();
     });
   }
@@ -1491,7 +1498,7 @@ export class StudioService {
     });
   }
 
-  async retryJobs(ids, { regenerate = false } = {}) {
+  async retryJobs(ids, { regenerate = false, useCurrentImageProvider = false } = {}) {
     return this.serializeSubmission(async () => {
       this.assertOpen();
       const requested = [...new Set(ids)].map(id => this.state.jobs.find(job => job.id === id)).filter(Boolean);
@@ -1507,14 +1514,18 @@ export class StudioService {
         targets.set(key, latest);
       }
       const jobs = [...targets.values()];
+      if (useCurrentImageProvider && (regenerate || jobs.some(job => job.kind !== 'image' || job.status !== 'failed' || job.remoteId || job.result))) {
+        throw new Error('只有明确失败、没有远端编号或可恢复结果的图片任务，才可更换模型重跑。');
+      }
       if (!regenerate && jobs.some(job => job.status === 'unknown' && !(job.kind === 'video' && job.remoteId))) throw new Error('状态未知的任务可能已经计费，请核对服务商记录后明确选择重新生成。');
+      const provider = useCurrentImageProvider && jobs.length ? this.provider('image') : null;
       const changed = [];
       for (const job of jobs) {
         if (job.kind === 'image' && (job.slot >= (this.state.rows.find(row => row.id === job.rowId)?.count || 0) || this.jobChain(job).some(item => item.status === 'succeeded'))) continue;
         if (this.active.has(job.id) || (!regenerate && job.status !== 'failed' && !(job.status === 'unknown' && job.kind === 'video' && job.remoteId))) continue;
         if (!regenerate && job.result && (job.result.images?.length || job.result.url || job.result.localPath)) {
           job.startedAt = null; job.finishedAt = null;
-          job.status = 'saving'; job.error = ''; job.updatedAt = now(); changed.push(job); continue;
+          job.status = 'saving'; job.error = ''; job.failureStage = ''; job.failureCode = ''; job.updatedAt = now(); changed.push(job); continue;
         }
         if (!regenerate && job.kind === 'video' && job.remoteId && !(job.status === 'failed' && job.remoteFailed === true)) {
           job.startedAt = null; job.finishedAt = null;
@@ -1524,6 +1535,7 @@ export class StudioService {
         // Deduplicate repeated retry clicks while another attempt occupies a slot.
         if (this.jobChain(job).some(other => other.id !== job.id && !TERMINAL.has(other.status))) continue;
         const next = this.newJob(job.kind, { ...clone(job.snapshot), originId: job.snapshot?.originId || job.id, ...(regenerate && ['speech', 'montage'].includes(job.kind) ? { speechRevision: uid() } : {}) }, { rowId: job.rowId, slot: job.slot, attempt: Math.max(...this.jobChain(job).map(item => item.attempt)) + 1, prompt: job.prompt, referencePaths: clone(job.referencePaths), providerId: job.providerId, ...(job.planningNote ? { planningNote: job.planningNote } : {}), ...(!regenerate && job.kind === 'montage' && job.checkpoint ? { checkpoint: clone(job.checkpoint) } : {}) });
+        if (provider) { next.snapshot.provider = provider; next.providerId = provider.id; }
         this.state.jobs.push(next); changed.push(next);
       }
       this.changed(); this.schedule(); return clone(changed);
@@ -1729,8 +1741,10 @@ export class StudioService {
 
   async runJob(job, signal) {
     let imageResponseReceived = false;
+    let imageStage = 'local-input';
     try {
       if (job.status === 'saving') {
+        imageStage = 'local-save';
         if (!job.startedAt && (job.kind === 'image' || job.kind === 'video')) this.updateJob(job, { status: 'saving' });
         await this.saveResult(job, signal);
         return;
@@ -1740,11 +1754,13 @@ export class StudioService {
         if (job.snapshot.imagePlanning) await this.prepareImageJob(job);
         if (this.closing || signal.aborted) return;
         this.updateJob(job, { status: 'running', error: '' });
+        imageStage = 'model-request';
         const result = await this.callProvider('image', { prompt: job.prompt, referencePaths: job.referencePaths, ratio: job.snapshot.row.ratio, resolution: job.snapshot.row.resolution, count: 1 }, { provider: job.snapshot.provider, signal, onRemoteId: id => this.recordRemote(job, id) });
         // A successful provider response may already be billed even without a
         // remote ID (for example base64 image APIs). Until a recoverable result
         // has been persisted, any local failure must prohibit ordinary resubmit.
         imageResponseReceived = true;
+        imageStage = 'local-save';
         if (this.closing) return;
         if (!result?.images?.length) throw new Error('服务未返回图片。');
         const image = result.images[0];
@@ -1784,9 +1800,14 @@ export class StudioService {
       }
     } catch (error) {
       if (this.closing || this.closed) return;
-      const unknown = job.status !== 'saving' && (imageResponseReceived || error.unknown || error.name === 'AbortError' || (job.remoteId && job.kind === 'image'));
-      const message = imageResponseReceived && unknown ? `远端已返回图片，但本地尚未安全保存。请先核对服务商结果，普通重试不会重新计费提交。保存错误：${redact(error.message || error)}` : redact(error.message || error);
-      this.updateJob(job, { status: unknown ? 'unknown' : 'failed', error: message });
+      const unknown = job.status !== 'saving' && (imageResponseReceived || error?.unknown || error?.name === 'AbortError' || (job.remoteId && job.kind === 'image'));
+      const rawReason = String(error?.message || error || '');
+      const reason = redact(error?.path ? rawReason.replaceAll(error.path, '[本地文件]') : rawReason).trim() || '程序未收到具体错误原因。';
+      const code = /^[A-Z0-9_]{2,64}$/.test(error?.code || '') ? error.code : '';
+      const failureStage = code.startsWith('CREDENTIAL_STORAGE_') ? 'credentials' : error?.imageStage || imageStage;
+      const message = imageResponseReceived && unknown ? `远端已返回图片，但本地尚未安全保存。请先核对服务商结果，普通重试不会重新计费提交。保存错误：${reason}` : reason;
+      this.updateJob(job, { status: unknown ? 'unknown' : 'failed', error: message,
+        ...(job.kind === 'image' ? { failureStage, failureCode: Number.isInteger(error?.status) ? `HTTP ${error.status}` : code } : {}) });
     }
   }
   recordRemote(job, remoteId) {
