@@ -13,7 +13,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare-windows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+      - name: Download and verify the original Windows installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          test "$RELEASE_TAG" = "v$version"
+          name="ZiyunStudio-Setup-$version.exe"
+          gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -x true
+          gh release download "$RELEASE_TAG" --pattern "$name" --dir windows-original
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const version = require('./package.json').version;
+          const receipt = require(`./.github/local-windows-v${version}.json`);
+          const name = `ZiyunStudio-Setup-${version}.exe`;
+          assert.equal(receipt.version, version);
+          assert.equal(receipt.fileName, name);
+          const bytes = fs.readFileSync(`windows-original/${name}`);
+          assert.equal(bytes.length, receipt.size);
+          assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), receipt.sha256);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-windows-installer
+          path: windows-original/*.exe
+          if-no-files-found: error
+          retention-days: 3
+
   build:
+    needs: prepare-windows
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +89,7 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - name: Download and verify the locked Electron runtime
+        if: matrix.platform == 'mac'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,15 +127,15 @@ jobs:
           "$ffmpeg" -hide_banner -filters | grep -E '[[:space:]]subtitles[[:space:]]'
       - name: Service and actual media tests
         run: npm test
-      - name: Build Windows x64
+      - uses: actions/download-artifact@v4
+        if: matrix.platform == 'windows'
+        with:
+          name: local-windows-installer
+          path: release/${{ env.PACKAGE_VERSION }}
+      - name: Install the verified Windows x64 package
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          if (Test-Path -LiteralPath runtime/ffmpeg.exe) { throw 'Public installers use separately installed FFmpeg.' }
-          npm run build
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never ("--config.electronDist=" + $env:ELECTRON_DIST_ARCHIVE)
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $installer = (Resolve-Path -LiteralPath "release/$version/ZiyunStudio-Setup-$version.exe").Path
           $destination = Join-Path $env:RUNNER_TEMP 'ZiyunStudio'
