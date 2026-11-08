@@ -46,21 +46,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
-      - name: Seed Electron checksums from the locked npm package
+      - name: Verify the Electron runtime installed by npm
         shell: bash
         run: |
           node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
           const fs = require('node:fs');
-          const path = require('node:path');
-          const { defaultElectronGetCacheRoot } = require('app-builder-lib/out/util/electronGet');
           const { version } = require('electron/package.json');
-          const checksums = require('./node_modules/electron/checksums.json');
-          const artifact = `electron-v${version}-${process.platform}-${process.arch}.zip`;
-          if (!/^[a-f0-9]{64}$/.test(checksums[artifact])) throw new Error(`Missing checksum for ${artifact}`);
-          const cache = defaultElectronGetCacheRoot();
-          fs.mkdirSync(cache, { recursive: true });
-          fs.writeFileSync(path.join(cache, `SHASUMS256.txt-${version}`), `${checksums[artifact]}  ${artifact}\n`);
-          console.log(`Seeded verified npm checksum for ${artifact}`);
+          assert.equal(fs.readFileSync('node_modules/electron/dist/version', 'utf8').trim(), version);
+          assert.ok(fs.existsSync(require('electron')));
+          console.log(`Using locked Electron ${version} for ${process.platform}/${process.arch}`);
           NODE
       - name: Prepare isolated media test runtime
         shell: bash
@@ -83,7 +78,7 @@ jobs:
           if (Test-Path -LiteralPath runtime/ffmpeg.exe) { throw 'Public installers use separately installed FFmpeg.' }
           npm run build
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never
+          node node_modules/electron-builder/out/cli/cli.js --win nsis --x64 --publish never --config.electronDist=node_modules/electron/dist
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $installer = (Resolve-Path -LiteralPath "release/$version/ZiyunStudio-Setup-$version.exe").Path
@@ -99,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run build
-          node node_modules/electron-builder/out/cli/cli.js --mac dmg --${{ matrix.arch }} --publish never
+          node node_modules/electron-builder/out/cli/cli.js --mac dmg --${{ matrix.arch }} --publish never --config.electronDist=node_modules/electron/dist
           version=$(node -p 'require("./package.json").version')
           app=$(find "release/$version" -name '子云影像工坊.app' -type d -print -quit)
           test -n "$app"
