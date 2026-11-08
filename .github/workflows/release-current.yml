@@ -113,6 +113,28 @@ jobs:
           console.log(`Verified official Electron archive: ${process.env.ARCHIVE_NAME}`);
           NODE
           echo "ELECTRON_DIST_ARCHIVE=$file" >> "$GITHUB_ENV"
+      - name: Download and verify the locked DMG builder
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # These are the upstream bundle digests pinned by dmg-builder 26.18.0.
+          test "$(node -p 'require("dmg-builder/package.json").version')" = 26.18.0 || exit 0
+          case "$(node -p process.arch)" in
+            arm64) asset=436378817; digest=793404d0c96687e27d5ee40a668d498c92e36a64d6c2906df511031adb33cbeb ;;
+            x64) asset=436378863; digest=1664972f9cc2d6e8fce3b63e42cd30078aff602669c5856939c4519921200433 ;;
+            *) exit 1 ;;
+          esac
+          bundle="$RUNNER_TEMP/dmgbuild-bundle.tar.gz"
+          directory="$RUNNER_TEMP/dmgbuild"
+          gh api --allow-escape-sequences "repos/electron-userland/electron-builder-binaries/releases/assets/$asset" -H 'Accept: application/octet-stream' > "$bundle"
+          echo "$digest  $bundle" | shasum -a 256 -c
+          mkdir -p "$directory"
+          tar -xzf "$bundle" -C "$directory" --strip-components=1
+          test -x "$directory/dmgbuild"
+          echo "CUSTOM_DMGBUILD_PATH=$directory/dmgbuild" >> "$GITHUB_ENV"
       - name: Prepare isolated media test runtime
         shell: bash
         run: |
