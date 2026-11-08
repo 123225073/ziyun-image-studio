@@ -46,6 +46,22 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - name: Seed Electron checksums from the locked npm package
+        shell: bash
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { defaultElectronGetCacheRoot } = require('app-builder-lib/out/util/electronGet');
+          const { version } = require('electron/package.json');
+          const checksums = require('./node_modules/electron/checksums.json');
+          const artifact = `electron-v${version}-${process.platform}-${process.arch}.zip`;
+          if (!/^[a-f0-9]{64}$/.test(checksums[artifact])) throw new Error(`Missing checksum for ${artifact}`);
+          const cache = defaultElectronGetCacheRoot();
+          fs.mkdirSync(cache, { recursive: true });
+          fs.writeFileSync(path.join(cache, `SHASUMS256.txt-${version}`), `${checksums[artifact]}  ${artifact}\n`);
+          console.log(`Seeded verified npm checksum for ${artifact}`);
+          NODE
       - name: Prepare isolated media test runtime
         shell: bash
         run: |
