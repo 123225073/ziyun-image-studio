@@ -53,8 +53,10 @@ jobs:
           const assert = require('node:assert/strict');
           const fs = require('node:fs');
           const { version } = require('electron/package.json');
-          assert.equal(fs.readFileSync('node_modules/electron/dist/version', 'utf8').trim(), version);
-          assert.ok(fs.existsSync(require('electron')));
+          // Electron 45 lazily installs its binary on first require().
+          const executable = require('electron');
+          assert.ok(fs.existsSync(executable));
+          assert.equal(fs.readFileSync('node_modules/electron/dist/version', 'utf8').trim().replace(/^v/, ''), version);
           console.log(`Using locked Electron ${version} for ${process.platform}/${process.arch}`);
           NODE
       - name: Prepare isolated media test runtime
