@@ -106,6 +106,8 @@ function stopFixtureChildren() {
 }
 const scratchKeychain = path.join(fixture,'upgrade-test.keychain-db');
 const scratchPassword = randomBytes(32).toString('hex');
+const testStorageKey = randomBytes(24).toString('base64');
+const testKeyItem = ['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
 let previousDefault, previousSearch, madeKeychain = false;
 function security(command, ...args) {
   // Never include arguments, command output or fixture passwords in errors.
@@ -132,17 +134,18 @@ function prepareKeychain() {
   [previousDefault] = keychainPaths(security('default-keychain','-d','user'));
   previousSearch = keychainPaths(security('list-keychains','-d','user'));
   assert.ok(previousDefault && previousSearch.length);
-  const partitions = [...new Set([executablePath,process.env.ZIYUN_TEST_EXE].map(signingPartition))];
   security('create-keychain','-p',scratchPassword,scratchKeychain);
   madeKeychain = true;
   security('unlock-keychain','-p',scratchPassword,scratchKeychain);
   security('default-keychain','-d','user','-s',scratchKeychain);
   security('list-keychains','-d','user','-s',scratchKeychain);
   assert.deepEqual(keychainPaths(security('list-keychains','-d','user')),[scratchKeychain]);
-  const item = ['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
-  security('add-generic-password',...item,'-w',randomBytes(24).toString('base64'),
-    '-T',executablePath,'-T',process.env.ZIYUN_TEST_EXE,scratchKeychain);
-  security('set-generic-password-partition-list',...item,'-S',partitions.join(','),'-k',scratchPassword,scratchKeychain);
+  allowInstalledFixture();
+}
+function allowInstalledFixture() {
+  const partition = signingPartition(executablePath);
+  security('add-generic-password',...testKeyItem,'-w',testStorageKey,'-T',executablePath,'-T','/usr/bin/security',scratchKeychain);
+  security('set-generic-password-partition-list',...testKeyItem,'-S',partition+',apple-tool:','-k',scratchPassword,scratchKeychain);
 }
 function restoreKeychain() {
   if (!madeKeychain) return;
@@ -193,6 +196,13 @@ try {
     await fs.rename(bundle,path.join(fixture,'previous.app'));
     execFileSync('ditto',[newBundle,bundle],{timeout:60000});
   },65000);
+  await stage('approve the newly installed signature for the same synthetic storage key',() => {
+    // Reproduce the user's consent for an ad-hoc signed replacement using
+    // our known, identical test key in this disposable keychain. Never touch
+    // the encrypted credential file produced by the old app.
+    security('delete-generic-password',...testKeyItem,scratchKeychain);
+    allowInstalledFixture();
+  });
   await stage('open new application and verify default profile',() => launch(pkg.version),75000);
   const restored = await stage('read upgraded database',() => call('getState'));
   await expect(page.locator(`tr[data-row-id="${row.id}"]`)).toBeVisible();
