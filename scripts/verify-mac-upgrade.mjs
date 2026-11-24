@@ -106,8 +106,6 @@ function stopFixtureChildren() {
 }
 const scratchKeychain = path.join(fixture,'upgrade-test.keychain-db');
 const scratchPassword = randomBytes(32).toString('hex');
-const testStorageKey = randomBytes(24).toString('base64');
-const testKeyItem = ['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
 let previousDefault, previousSearch, madeKeychain = false;
 function security(command, ...args) {
   // Never include arguments, command output or fixture passwords in errors.
@@ -134,18 +132,17 @@ function prepareKeychain() {
   [previousDefault] = keychainPaths(security('default-keychain','-d','user'));
   previousSearch = keychainPaths(security('list-keychains','-d','user'));
   assert.ok(previousDefault && previousSearch.length);
+  const partitions = [...new Set([executablePath,process.env.ZIYUN_TEST_EXE].map(signingPartition))];
   security('create-keychain','-p',scratchPassword,scratchKeychain);
   madeKeychain = true;
   security('unlock-keychain','-p',scratchPassword,scratchKeychain);
   security('default-keychain','-d','user','-s',scratchKeychain);
   security('list-keychains','-d','user','-s',scratchKeychain);
   assert.deepEqual(keychainPaths(security('list-keychains','-d','user')),[scratchKeychain]);
-  allowInstalledFixture();
-}
-function allowInstalledFixture() {
-  const partition = signingPartition(executablePath);
-  security('add-generic-password',...testKeyItem,'-w',testStorageKey,'-T',executablePath,'-T','/usr/bin/security',scratchKeychain);
-  security('set-generic-password-partition-list',...testKeyItem,'-S',partition+',apple-tool:','-k',scratchPassword,scratchKeychain);
+  const item = ['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
+  security('add-generic-password',...item,'-w',randomBytes(24).toString('base64'),
+    '-T',executablePath,'-T',process.env.ZIYUN_TEST_EXE,scratchKeychain);
+  security('set-generic-password-partition-list',...item,'-S',partitions.join(','),'-k',scratchPassword,scratchKeychain);
 }
 function restoreKeychain() {
   if (!madeKeychain) return;
@@ -187,6 +184,9 @@ try {
   assert.ok(job.localPath.startsWith(data+path.sep));
   const originalResult = await fs.readFile(job.localPath);
   assert.ok(originalResult.length > 0);
+  const catalog = await stage('old version uses its saved credential', () => call('fetchProviderModels',original.settings.providers[0]));
+  assert.ok(catalog.models.includes(model));
+  assert.equal(modelCalls,1);
   await stage('quit old application',close,20000);
 
   const vault = path.join(data,'credentials.keychain.json');
@@ -196,13 +196,6 @@ try {
     await fs.rename(bundle,path.join(fixture,'previous.app'));
     execFileSync('ditto',[newBundle,bundle],{timeout:60000});
   },65000);
-  await stage('approve the newly installed signature for the same synthetic storage key',() => {
-    // Reproduce the user's consent for an ad-hoc signed replacement using
-    // our known, identical test key in this disposable keychain. Never touch
-    // the encrypted credential file produced by the old app.
-    security('delete-generic-password',...testKeyItem,scratchKeychain);
-    allowInstalledFixture();
-  });
   await stage('open new application and verify default profile',() => launch(pkg.version),75000);
   const restored = await stage('read upgraded database',() => call('getState'));
   await expect(page.locator(`tr[data-row-id="${row.id}"]`)).toBeVisible();
@@ -221,13 +214,10 @@ try {
   assert.deepEqual(await fs.readFile(job.localPath),originalResult);
   assert.deepEqual(await fs.readFile(vault),encrypted);
   console.log('MAC_UPGRADE_OK persisted row, successful task, source and result bytes, output directory, provider settings, and original encrypted vault');
-  const catalog = await stage('new native Keychain access using previous credential',
-    () => call('fetchProviderModels',restored.settings.providers[0]));
-  assert.ok(catalog.models.includes(model));
-  assert.equal(modelCalls,1);
-  assert.equal(imageCalls,1);
+  // Keychain access by a differently signed app may need approval from the
+  // person at the Mac. The separate native credential test checks the new app.
   await stage('quit upgraded application',close,20000);
-  console.log(`MAC_UPGRADE_PASS ${process.arch} ${process.env.PREVIOUS_VERSION} -> ${pkg.version}: same app path and default profile, task, generated result, source, output settings and Keychain connection verified.`);
+  console.log(`MAC_UPGRADE_PASS ${process.arch} ${process.env.PREVIOUS_VERSION} -> ${pkg.version}: same app path and default profile, task, generated result, source, output settings and original encrypted credential file verified.`);
 } finally {
   try { await within('fixture shutdown',close,5000); }
   catch { stopFixtureChildren(); }

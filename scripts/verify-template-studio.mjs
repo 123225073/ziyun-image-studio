@@ -153,11 +153,11 @@ try {
   assert.equal(retained.templateDraft.basePath,whole.localPath);
   assert.equal(retained.batchReplaceDraft.templatePath,whole.localPath);
   assert.ok((await fs.readFile(exported)).equals(await fs.readFile(whole.localPath)));
-  assert.equal(await page.getByAltText('模板调试底图').evaluate(img=>img.complete&&img.naturalWidth>0),true);
+  await expect.poll(()=>page.getByAltText('模板调试底图').evaluate(img=>img.complete&&img.naturalWidth>0)).toBe(true);
   assert.equal((await call('getState')).settings.templateOutputDir,exportDirectory);
   assert.equal(await page.getByLabel('本区修改要求',{exact:true}).inputValue(),'手机标题改成黄色');
   await button('区域 1').click();assert.equal(await page.getByLabel('本区修改要求',{exact:true}).inputValue(),'人物换成附件图');
-  assert.equal(await page.getByAltText('本区参考图').evaluate(img=>img.complete&&img.naturalWidth>0),true);
+  await expect.poll(()=>page.getByAltText('本区参考图').evaluate(img=>img.complete&&img.naturalWidth>0)).toBe(true);
   response=await encoded('#dddddd','webp');
   await button('生成圈选修改').click();
   const local=await waitResult(2);
