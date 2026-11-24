@@ -193,7 +193,9 @@ async function setup(){
    }
    if(method==='cancelMacUpdate'){macUpdater?.cancel();return {ok:true};}
    if(macUpdater?.finalizing)throw new Error('正在安装更新，请稍候。');
-   if(macUpdater&&method!=='getState'){counted=true;pendingStudioCalls++;}
+   // The video page refreshes public pricing in the background even after the
+   // user leaves it. Read-only queries do not hold any project writes open.
+   if(macUpdater&&!['getState','readOairegboxDashboard','checkAppRelease'].includes(method)){counted=true;pendingStudioCalls++;}
    if(method==='pasteBatchTemplate'){
     let bytes;
     if(args.length){

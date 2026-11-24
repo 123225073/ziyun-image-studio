@@ -181,6 +181,11 @@ try {
   await app.evaluate(({net},fixture) => {
     const fs = process.getBuiltinModule('node:fs');
     const {Readable} = process.getBuiltinModule('node:stream');
+    // Opening the video draft queries public pricing. The test uses no live
+    // model provider and never needs to wait for an unrelated online service.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url,...args) => String(url) === 'https://api.oairegbox.cc/api/pricing'
+      ? Promise.resolve(Response.json({data:[]})) : originalFetch(url,...args);
     net.fetch = async (url) => {
       const requested = String(url);
       if (requested === fixture.apiUrl) return Response.json(fixture.published);
@@ -210,6 +215,7 @@ try {
   const contents = await Promise.all([source,job.localPath,vault].map(sha));
   await page.getByRole('button',{name:'04 视频开头'}).click();
   await page.getByLabel('视频内容描述',{exact:true}).fill(videoPrompt);
+  await expect(page.getByRole('button',{name:'刷新价格与余额'})).toBeEnabled({timeout:20000});
   await page.getByTestId('speech-nav').click();
   await page.getByTestId('speech-text').fill(speechText);
   const saved = projectOnDisk();
@@ -218,8 +224,19 @@ try {
   const leaving = app.waitForEvent('close',{timeout:155000});
   leaving.catch(() => {});
   await update.click();
-  // Preserve the in-app diagnostic when an expected shutdown did not happen.
-  try { await leaving; }
+  // If the update returned to the ready state, surface its visible result
+  // immediately. A closed renderer is the normal shutdown path.
+  const returned = page.waitForFunction(() => {
+    const modal = document.querySelector('[role="dialog"]');
+    const button = [...(modal?.querySelectorAll('button') || [])].find(el => el.textContent.trim() === '检查并更新');
+    return button && !button.disabled && modal.querySelector('[aria-live="polite"]')?.textContent.trim();
+  },null,{timeout:155000}).then(async result => {
+    throw new Error('Update returned without restart: '+await result.jsonValue());
+  },async error => {
+    if (page.isClosed()) return leaving;
+    throw error;
+  });
+  try { await Promise.race([leaving,returned]); }
   catch (error) {
     console.error('Update dialog:',await dialog.innerText({timeout:3000}).catch(() => 'already closed'));
     throw error;
