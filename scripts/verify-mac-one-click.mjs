@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import fs from 'node:fs/promises';
@@ -74,6 +74,66 @@ if args.count == 3 && args[2] == "describe",
 `);
 execFileSync('/usr/bin/xcrun',['swiftc',swift,'-o',observe],{timeout:60000});
 const installedPids = () => execFileSync(observe,[bundle],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);
+const relativeAsar = path.join('Contents','Resources','app.asar');
+const inode = async file => (await fs.lstat(file,{bigint:true})).ino.toString();
+const bundleVersion = directory => execFileSync('/usr/libexec/PlistBuddy',['-c','Print :CFBundleShortVersionString',path.join(directory,'Contents','Info.plist')],{encoding:'utf8'}).trim();
+const signature = directory => {
+  execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',directory]);
+  const details = spawnSync('/usr/bin/codesign',['-dv','--verbose=4',directory],{encoding:'utf8'});
+  assert.equal(details.status,0);
+  assert.match(details.stderr,/^Identifier=com\.ziyun\.imagestudio$/m);
+  const hash = details.stderr.match(/^CDHash=([a-f0-9]{40})$/m)?.[1];
+  assert.ok(hash);
+  return {hash,adhoc:/^Signature=adhoc$/m.test(details.stderr)};
+};
+function projectOnDisk() {
+  return JSON.parse(execFileSync('/usr/bin/sqlite3',['-readonly',path.join(data,'studio.sqlite'),
+    'SELECT value FROM project_state WHERE id=1'],{encoding:'utf8',maxBuffer:16000000}));
+}
+function compareSavedState(before,after) {
+  assert.deepEqual(after.rows,before.rows);
+  assert.deepEqual(after.jobs,before.jobs);
+  assert.deepEqual(after.settings,before.settings);
+}
+async function writeEvidence(outcome, details) {
+  const destination = path.resolve('test-output','one-click-update');
+  await fs.mkdir(destination,{recursive:true});
+  await fs.writeFile(path.join(destination,'result.json'),JSON.stringify({outcome,architecture:process.arch,version:pkg.version,digest:asset.digest,...details},null,2));
+  console.log(outcome,process.arch,pkg.version,JSON.stringify(details));
+}
+const videoPrompt = '更新前尚未提交的视频描述';
+const speechText = '更新前尚未提交的配音文案';
+async function verifyAwaitingConsent(original,originalSignature,trusted) {
+  // This is a different outcome from a successful relaunch. It is valid only
+  // for an intentionally ad-hoc build with direct evidence of OS intervention.
+  assert.ok(trusted.adhoc,'Developer ID releases require the normal-launch path');
+  const observation = diagnostic(observe,[bundle,'describe']);
+  assert.match(observation,/^window CoreServicesUIAgent(?:\s|$)/m);
+  const blocked = observation.split('\n').find(line => /^\d+ false /.test(line) && line.includes('/AppTranslocation/'));
+  assert.ok(blocked,'Expected the target to be held by Gatekeeper');
+  const [pid,,mapped,executable] = blocked.split(' ');
+  assert.match(pid,/^\d+$/);
+  assert.equal(path.basename(mapped),path.basename(bundle));
+  assert.equal(executable,path.join(mapped,'Contents','MacOS',pkg.productName));
+  assert.match(diagnostic('/bin/ps',['-p',pid,'-o','state=']),/T/);
+  assert.deepEqual(signature(mapped),trusted,'Gatekeeper must be inspecting this exact signed image');
+  const assessment = spawnSync('/usr/sbin/spctl',['--assess','--type','execute','--verbose=3',bundle],{encoding:'utf8',timeout:18000});
+  assert.equal(assessment.status,3);
+  assert.match(assessment.stderr,/rejected/i);
+  assert.match(diagnostic('/usr/bin/xattr',['-p','com.apple.quarantine',bundle]),/^[0-9a-f]+;/i);
+  const stages = (await fs.readdir(applications)).filter(name => name.startsWith('.ziyun-app-update-'));
+  assert.equal(stages.length,1);
+  const stage = path.join(applications,stages[0]);
+  const receipt = JSON.parse(await fs.readFile(path.join(stage,'receipt.json'),'utf8'));
+  const backup = path.join(stage,path.basename(bundle));
+  assert.deepEqual([receipt.target,receipt.original,receipt.replacement],[bundle,original,await inode(bundle)]);
+  assert.equal(await inode(backup),original);
+  assert.equal(bundleVersion(backup),'0.0.1');
+  assert.deepEqual(signature(backup),originalSignature);
+  assert.equal(receipt.drafts?.video?.prompt,videoPrompt);
+  assert.equal(receipt.drafts?.speech?.text,speechText);
+  assert.ok(!(await fs.readdir(stage)).includes('started'));
+}
 function diagnostic(command, args) {
   try { return execFileSync(command,args,{encoding:'utf8',timeout:12000,stdio:['ignore','pipe','pipe']}).trim(); }
   catch (error) { return [error.status,String(error.stdout || ''),String(error.stderr || '')].join(' ').trim(); }
@@ -107,6 +167,8 @@ const state = () => page.evaluate(() => window.studio.call('getState'));
 try {
   await launch('0.0.1');
   const oldPid = String(app.process().pid);
+  const original = await inode(bundle);
+  const originalSignature = signature(bundle);
   console.log('Baseline LaunchServices registration:',diagnostic(observe,[bundle,'describe']));
   await page.locator('tr[data-row-id]').first().click();
   const quantity = page.getByRole('spinbutton',{name:'生成数量'});
@@ -146,6 +208,11 @@ try {
   assert.equal(job.status,'succeeded');
   const source = before.rows[0].sourcePaths[0];
   const contents = await Promise.all([source,job.localPath,vault].map(sha));
+  await page.getByRole('button',{name:'04 视频开头'}).click();
+  await page.getByLabel('视频内容描述',{exact:true}).fill(videoPrompt);
+  await page.getByTestId('speech-nav').click();
+  await page.getByTestId('speech-text').fill(speechText);
+  const saved = projectOnDisk();
   const traceBefore = await fs.readFile(trace,'utf8').catch(() => '');
   await versions.click();
   const leaving = app.waitForEvent('close',{timeout:155000});
@@ -159,7 +226,10 @@ try {
   }
   app = undefined;
   assert.equal(await fs.readFile(trace,'utf8'),traceBefore+'download\n');
+  const trustedBundle = path.resolve(process.env.ZIYUN_TEST_EXE,'../../..');
+  const trusted = signature(trustedBundle);
   let relaunched;
+  let awaitingApproval = false;
   const began = Date.now();
   let observed = false;
   try {
@@ -176,24 +246,30 @@ try {
     },{timeout:80000,message:'Expected macOS relaunch and first-window confirmation at the original application path'}).toBe(true);
   } catch (error) {
     await diagnoseRelaunch();
-    throw error;
+    try { await verifyAwaitingConsent(original,originalSignature,trusted); }
+    catch (consentError) { throw new AggregateError([error,consentError],'Unexpected Mac update result'); }
+    awaitingApproval = true;
   }
-  const trustedBundle = path.resolve(process.env.ZIYUN_TEST_EXE,'../../..');
-  const asar = path.join('Contents','Resources','app.asar');
-  assert.equal(await sha(path.join(bundle,asar)),await sha(path.join(trustedBundle,asar)));
-  execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',bundle]);
-  execFileSync(observe,[bundle,relaunched]);
-  await expect.poll(() => installedPids().includes(relaunched),{timeout:20000}).toBe(false);
-  await launch(pkg.version);
-  const after = await state();
-  assert.deepEqual(after.rows,before.rows);
-  assert.deepEqual(after.jobs.map(j => [j.id,j.status,j.localPath]),before.jobs.map(j => [j.id,j.status,j.localPath]));
-  assert.deepEqual(after.settings.providers,before.settings.providers);
-  assert.deepEqual(after.settings.bindings,before.settings.bindings);
-  assert.equal(after.settings.outputDir,before.settings.outputDir);
+  assert.equal(await sha(path.join(bundle,relativeAsar)),await sha(path.join(trustedBundle,relativeAsar)));
+  assert.deepEqual(signature(bundle),trusted);
+  assert.equal(bundleVersion(bundle),pkg.version);
+  const cpu = execFileSync('/usr/bin/lipo',['-archs',executablePath],{encoding:'utf8'}).trim().split(/\s+/);
+  assert.ok(cpu.includes(process.arch === 'x64' ? 'x86_64' : 'arm64'));
+  compareSavedState(saved,projectOnDisk());
   assert.deepEqual(await Promise.all([source,job.localPath,vault].map(sha)),contents);
-  await expect(page.locator(`tr[data-row-id="${before.rows[0].id}"]`)).toBeVisible();
-  console.log(`ONE_CLICK_UPDATE_PASS ${process.arch} → ${pkg.version}; unsaved edit retained, downloaded correct DMG once, installed, macOS relaunched, old project, source, result, settings and encrypted vault preserved`);
+  if (awaitingApproval) {
+    await writeEvidence('ONE_CLICK_INSTALLED_AWAITING_MACOS_APPROVAL',{installed:true,relaunched:false,
+      osAssessment:'ad-hoc signature rejected, process suspended with system approval window',backupVerified:true,
+      projectOnDiskVerified:true,pendingDraftsVerified:true});
+  } else {
+    execFileSync(observe,[bundle,relaunched]);
+    await expect.poll(() => installedPids().includes(relaunched),{timeout:20000}).toBe(false);
+    await launch(pkg.version);
+    const after = await state();
+    compareSavedState(before,after);
+    await expect(page.locator(`tr[data-row-id="${before.rows[0].id}"]`)).toBeVisible();
+    await writeEvidence('ONE_CLICK_UPDATE_RELAUNCHED',{installed:true,relaunched:true,firstWindowConfirmed:true,projectOpened:true});
+  }
 } finally {
   if (app) await app.close();
 }

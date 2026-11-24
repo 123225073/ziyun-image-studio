@@ -232,21 +232,6 @@ jobs:
           previous="$mounted/子云影像工坊.app"
           codesign --verify --deep --strict "$previous"
           node scripts/verify-mac-upgrade.mjs "$previous"
-      - name: One-click update from the installed Mac application
-        if: matrix.platform == 'mac' && hashFiles('scripts/verify-mac-one-click.mjs') != ''
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Package the same updater under an older, test-only version. The
-          # target is the exact release DMG, including its unmodified signature.
-          baseline="$RUNNER_TEMP/updater-test-baseline"
-          node node_modules/electron-builder/out/cli/cli.js --mac --dir --${{ matrix.arch }} --publish never \
-            --config.electronDist="$ELECTRON_DIST_ARCHIVE" --config.directories.output="$baseline" --config.extraMetadata.version=0.0.1
-          app=$(find "$baseline" -type d -name '子云影像工坊.app' -print -quit)
-          test -n "$app"
-          codesign --verify --deep --strict "$app"
-          node scripts/verify-mac-one-click.mjs "$app" "release/$PACKAGE_VERSION/ZiyunStudio-$PACKAGE_VERSION-mac-${{ matrix.arch }}.dmg"
       - name: Installed application persistence
         timeout-minutes: 4
         run: node scripts/verify-installed.mjs
@@ -295,6 +280,21 @@ jobs:
       - name: Installed timeline save and export edit lock
         timeout-minutes: 4
         run: node scripts/verify-timeline-working.mjs
+      - name: One-click update from the installed Mac application
+        if: matrix.platform == 'mac' && hashFiles('scripts/verify-mac-one-click.mjs') != ''
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Package the same updater under an older, test-only version. The
+          # target is the exact release DMG, including its unmodified signature.
+          baseline="$RUNNER_TEMP/updater-test-baseline"
+          node node_modules/electron-builder/out/cli/cli.js --mac --dir --${{ matrix.arch }} --publish never \
+            --config.electronDist="$ELECTRON_DIST_ARCHIVE" --config.directories.output="$baseline" --config.extraMetadata.version=0.0.1
+          app=$(find "$baseline" -type d -name '子云影像工坊.app' -print -quit)
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          node scripts/verify-mac-one-click.mjs "$app" "release/$PACKAGE_VERSION/ZiyunStudio-$PACKAGE_VERSION-mac-${{ matrix.arch }}.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}-${{ matrix.arch }}

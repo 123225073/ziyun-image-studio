@@ -21,14 +21,24 @@ const plist = (bundle, key) => run('/usr/libexec/PlistBuddy',
   ['-c', 'Print :' + key, path.join(bundle, 'Contents', 'Info.plist')], {timeout: 10000})
   .then(result => result.stdout.trim());
 
-async function installedBundle(executablePath) {
+async function applicationRoots() {
+  const roots = await Promise.all(['/Applications', path.join(os.homedir(), 'Applications')].map(
+    directory => fs.realpath(directory).catch(() => undefined)));
+  return roots.filter(Boolean);
+}
+
+async function runningBundle(executablePath) {
   const exe = await fs.realpath(executablePath);
   const bundle = path.resolve(exe, '../../..');
   if (!bundle.endsWith('.app') || exe !== path.join(bundle, 'Contents', 'MacOS', product)) {
     throw new Error('请从「应用程序」中的子云影像工坊启动更新。');
   }
-  const roots = await Promise.all(['/Applications', path.join(os.homedir(), 'Applications')].map(
-    directory => fs.realpath(directory).catch(() => undefined)));
+  return bundle;
+}
+
+async function installedBundle(executablePath) {
+  const bundle = await runningBundle(executablePath);
+  const roots = await applicationRoots();
   if (!roots.includes(path.dirname(bundle))) {
     throw new Error('请先将工坊移至「应用程序」，推出安装镜像，再从「应用程序」启动更新。');
   }
@@ -63,6 +73,14 @@ async function markDownload(dmg, installed) {
   const quarantine = source?.stdout.trim() ||
     ['0081', Math.floor(Date.now() / 1000).toString(16), 'ZiyunStudio', randomUUID()].join(';');
   await run('/usr/bin/xattr', ['-w', key, quarantine, installed]);
+}
+
+async function signature(bundle) {
+  const {stderr} = await run('/usr/bin/codesign', ['--display', '--verbose=4', bundle], {timeout:15000});
+  const hash = stderr.match(/^CDHash=([0-9a-f]{40,64})$/mi)?.[1];
+  const team = stderr.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim();
+  if (!hash || !team) throw new Error('无法读取工坊的签名身份。');
+  return {hash:hash.toLowerCase(), team};
 }
 
 async function stageDiskImage(dmgPath, destination, version, arch) {
@@ -111,6 +129,16 @@ export async function prepareMacInstall({dmgPath, version, arch, executablePath 
   try {
     await checkAtomicExchange(stage);
     await stageDiskImage(dmgPath, candidate, version, arch);
+    const {team} = await signature(target);
+    if (team !== 'not set') {
+      // Once the installed app has an Apple team, later releases must be
+      // Developer ID Application builds from that same team.
+      if (!/^[A-Z0-9]{10}$/.test(team)) throw new Error('当前应用的签名团队无法核验。');
+      const requirement = 'anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' +
+        ' and certificate leaf[subject.OU] = "' + team + '"';
+      try { await run('/usr/bin/codesign', ['--verify', '--strict', '-R=' + requirement, candidate], {timeout:60000}); }
+      catch { throw new Error('新版应用的开发者签名与已安装版本不匹配。'); }
+    }
     const replacement = await inode(candidate);
     const receiptPath = path.join(stage, 'receipt.json');
     const receipt = {target, original, replacement};
@@ -150,44 +178,74 @@ export async function prepareMacInstall({dmgPath, version, arch, executablePath 
   }
 }
 
-// Called after the first window is ready, including a later manual launch
-// following a macOS approval prompt. Only dispose of the previous bundle
-// if both file identities still match the receipt from this installation.
-export async function confirmMacInstall() {
-  if (process.platform !== 'darwin') return;
-  const target = await installedBundle(process.execPath).catch(() => undefined);
-  if (!target) return;
-  const parent = path.dirname(target);
-  const current = await inode(target);
-  let drafts;
-  for (const entry of await fs.readdir(parent, {withFileTypes:true})) {
-    if (!entry.isDirectory() || !stageName.test(entry.name)) continue;
+async function pendingReceipts(parent, directBundle, hint) {
+  const matches = [];
+  for (const entry of await fs.readdir(parent, {withFileTypes:true}).catch(() => [])) {
+    if (!entry.isDirectory() || !stageName.test(entry.name) || (hint && hint !== entry.name)) continue;
     const stage = path.join(parent, entry.name);
     try {
       const stat = await fs.lstat(stage);
       if (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) continue;
       const receiptPath = path.join(stage, 'receipt.json');
+      const file = await fs.lstat(receiptPath);
+      if (!file.isFile() || file.uid !== stat.uid || (file.mode & 0o077) !== 0) continue;
       const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
       const previous = path.join(stage, candidateName);
-      if (receipt.target !== target) continue;
+      const target = receipt.target;
+      if (typeof target !== 'string' || !target.endsWith('.app') || path.dirname(target) !== parent) continue;
+      if (directBundle && directBundle !== target) continue;
+      const current = await inode(target);
       const priorBundle = await inode(previous);
       const restoredPath = path.join(stage, 'rolled-back');
       const rolledBack = receipt.original === current && receipt.replacement === priorBundle && await fs.lstat(restoredPath)
         .then(marker => marker.isFile(), () => false);
       if (!rolledBack && !(receipt.replacement === current && receipt.original === priorBundle)) continue;
-      // Mark readiness before cleanup starts, so a crash during removal can
-      // never cause the helper to restore a partially removed old bundle.
-      const started = path.join(stage, 'started');
-      try {
-        await fs.writeFile(started, current, {flag:'wx', mode:0o600});
-        if (Object.hasOwn(receipt, 'drafts')) drafts = receipt.drafts;
-      } catch (error) { if (error.code !== 'EEXIST') throw error; }
-      await fs.rm(previous, {recursive:true});
-      if (rolledBack) await fs.unlink(restoredPath);
-      await fs.unlink(receiptPath);
-      await fs.unlink(started);
-      await fs.rmdir(stage);
-    } catch { /* An incomplete or concurrently cleaned receipt is left alone. */ }
+      matches.push({stage, target, current, previous, priorBundle, receipt, receiptPath, rolledBack, restoredPath});
+    } catch { /* Leave incomplete and concurrently removed receipts alone. */ }
   }
+  return matches;
+}
+
+// Only called after a usable window has opened. Apple's first approved launch
+// can run from an AppTranslocation copy of the bundle. Correlate that copy
+// with an installed signed application and its exact pending file identities.
+export async function confirmMacInstall() {
+  if (process.platform !== 'darwin') return;
+  const bundle = await runningBundle(process.execPath).catch(() => undefined);
+  if (!bundle) return;
+  const roots = await applicationRoots();
+  const direct = roots.includes(path.dirname(bundle));
+  const translocated = /\/AppTranslocation\/[0-9a-f-]{36}\/d\/[^/]+\.app$/i.test(bundle);
+  if (!direct && !translocated) return;
+  const hint = process.argv.find(arg => arg.startsWith('--ziyun-update-stage='))?.split('=')[1];
+  let matches = (await Promise.all((direct ? [path.dirname(bundle)] : roots).map(
+    parent => pendingReceipts(parent, direct ? bundle : undefined, stageName.test(hint) ? hint : undefined)))).flat();
+  if (!direct && matches.length) {
+    const {hash} = await signature(bundle);
+    const sameSignature = [];
+    for (const match of matches) {
+      const installed = await signature(match.target).catch(() => undefined);
+      if (installed?.hash === hash) sameSignature.push(match);
+    }
+    matches = sameSignature;
+  }
+  // If the original location is ambiguous, a later direct launch can still
+  // collect the unmodified receipt and its saved drafts.
+  if (matches.length !== 1) return;
+  const {stage, target, current, previous, priorBundle, receipt, receiptPath, rolledBack, restoredPath} = matches[0];
+  if (await inode(target) !== current || await inode(previous) !== priorBundle) return;
+  let drafts;
+  const started = path.join(stage, 'started');
+  try {
+    await fs.writeFile(started, current, {flag:'wx', mode:0o600});
+    drafts = receipt.drafts;
+  } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  try {
+    await fs.rm(previous, {recursive:true});
+    if (rolledBack) await fs.unlink(restoredPath);
+    await fs.unlink(receiptPath);
+    await fs.unlink(started);
+    await fs.rmdir(stage);
+  } catch { /* A later successful launch can retry cleanup. */ }
   return drafts;
 }

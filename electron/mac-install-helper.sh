@@ -14,8 +14,8 @@ notify_failure() {
   /usr/bin/osascript -e 'display notification "请打开工坊重新检查更新，或从 GitHub 发布页下载安装。" with title "子云影像工坊更新未完成"' >/dev/null 2>&1
 }
 show_backup() {
-  /usr/bin/open -R "$candidate"
-  /usr/bin/osascript -e 'display notification "旧版应用已在访达中显示。需要回退时，请先退出工坊，再将旧版拷贝回原应用程序文件夹。" with title "新版工坊尚未确认启动"' >/dev/null 2>&1
+  /usr/bin/open -R "$candidate" >/dev/null 2>&1 &
+  /usr/bin/osascript -e 'display notification "如果 macOS 正在询问是否打开新版，请查看系统提示。访达已选中旧版应用，供需要时回退。" with title "新版工坊尚未确认启动"' >/dev/null 2>&1
 }
 safe_to_restore() {
   # A system security prompt can outlive open(1). Leave the verified
@@ -41,7 +41,7 @@ open_original() {
   else
     drop_candidate
   fi
-  /usr/bin/open "$target"
+  /usr/bin/open "$target" --args "--ziyun-update-stage=${stage##*/}" >/dev/null 2>&1 &
 }
 exchange() {
   # Darwin's RENAME_SWAP keeps one complete, usable app at the target even
@@ -79,15 +79,22 @@ fi
 # LaunchServices presents normal Gatekeeper and application-management UI.
 # The new app cleans up its verified backup when its first window is ready.
 # open may return success before LaunchServices has finished opening it.
-if /usr/bin/open "$target"; then
-  waited=0
-  while [ "$waited" -lt 180 ]; do
-    if [ ! -d "$candidate" ] || [ -f "$stage/started" ]; then exit 0; fi
-    /bin/sleep 1
-    waited=$((waited + 1))
-  done
-fi
+/usr/bin/open "$target" --args "--ziyun-update-stage=${stage##*/}" >/dev/null 2>&1 &
+opener=$!
+waited=0
+while [ "$waited" -lt 180 ]; do
+  if [ ! -d "$candidate" ] || [ -f "$stage/started" ]; then exit 0; fi
+  if [ -n "$opener" ] && ! kill -0 "$opener" 2>/dev/null; then
+    wait "$opener" || break
+    opener=''
+  fi
+  /bin/sleep 1
+  waited=$((waited + 1))
+done
 if [ "$(identity "$target")" = "$replacement" ] && [ "$(identity "$candidate")" = "$original" ]; then
+  # open(1) itself can block while the person considers the macOS prompt.
+  # Keep that request, the new install and its previous bundle in place.
+  if [ -n "$opener" ] && kill -0 "$opener" 2>/dev/null; then show_backup; exit 1; fi
   if ! safe_to_restore; then
     if [ ! -f "$stage/started" ] && [ -d "$candidate" ]; then show_backup; fi
     exit 1

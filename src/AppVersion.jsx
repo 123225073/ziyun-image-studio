@@ -31,7 +31,7 @@ export default function AppVersion({call,run,Dialog,Button,onInfo}) {
         <dt>当前运行版本</dt><dd>v{info.version} · {info.platform==='darwin'?'macOS':info.platform==='win32'?'Windows':info.platform} / {info.arch}</dd>
         <dt>{info.oneClickUpdate?'Mac 最新稳定版':'GitHub 最新稳定版'}</dt><dd aria-live="polite">{checking?status:result?`v${result.latest} · ${{update:'有新版本',current:'已是最新版',ahead:'当前运行版本更新'}[result.comparison]}`:error||'点击下方检查更新'}</dd>
       </dl>
-      {info.oneClickUpdate&&<p className="update-hint">发现新版后会自动下载、安装并重新打开工坊。项目、图片和设置保存在原位置。</p>}
+      {info.oneClickUpdate&&<p className="update-hint">发现新版后将自动下载并安装。请按 macOS 的提示确认打开新版，项目、图片和设置保存在原位置。</p>}
       {checking&&progress?.phase==='downloading'&&<progress className="update-download-progress" max="100" value={progress.percent} aria-label="下载更新"/>}
       <div className="modal-actions">
         {checking&&info.oneClickUpdate&&['checking','downloading'].includes(progress?.phase)
