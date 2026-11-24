@@ -72,7 +72,7 @@ async function launch() {
   application = await electron.launch({ executablePath: process.env.ZIYUN_TEST_EXE || createRequire(import.meta.url)('electron'), args: process.env.ZIYUN_TEST_EXE ? [] : [root], env, timeout: 60000 });
   page = await application.firstWindow(); page.setDefaultTimeout(20000); page.on('pageerror', error => errors.push(error.message));
   await page.getByTestId('add-row').waitFor(); await page.setViewportSize({ width: 1513, height: 1035 });
-  await page.getByRole('button', { name: '03 混剪成片', exact: true }).click();
+  await page.getByRole('button', { name: '05 混剪成片', exact: true }).click();
 }
 async function close() { if (!application) return; try { await application.evaluate(({ app }) => app.exit(0)); } catch {} await Promise.race([application.close().catch(() => {}), new Promise(resolve => setTimeout(resolve, 2000))]); application = null; }
 async function fill(section, values) {

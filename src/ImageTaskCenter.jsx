@@ -20,7 +20,11 @@ const failureHelp=job=>{
 export default function ImageTaskCenter({state,call,notify,openImages,reveal,info,Button,Dialog}) {
   const [filter,setFilter]=useState('all'),[query,setQuery]=useState(''),[page,setPage]=useState(0);
   const [selected,setSelected]=useState([]),[detail,setDetail]=useState(null),[confirm,setConfirm]=useState(null),[busy,setBusy]=useState(false);
-  const rows=useMemo(()=>new Map(state.rows.map(row=>[row.id,row])),[state.rows]);
+  const rows=useMemo(()=>{
+    const entries=new Map(state.rows.map(row=>[row.id,row]));
+    for(const job of state.jobs) if(job.kind==='image'&&job.snapshot?.feature&&job.snapshot.row) entries.set(job.rowId,job.snapshot.row);
+    return entries;
+  },[state.rows,state.jobs]);
   const {jobs,chains}=useMemo(()=>{
     const chains=new Map();
     for(const job of state.jobs){
@@ -43,7 +47,7 @@ export default function ImageTaskCenter({state,call,notify,openImages,reveal,inf
   const chosen=matching.filter(job=>selected.includes(job.id));
   const failed=chosen.filter(job=>job.status==='failed');
   const canSwitch=failed.filter(job=>!job.result&&!job.remoteId);
-  const removable=chosen.filter(job=>chains.get(slotKey(job)).every(item=>!item.result&&!item.remoteId&&
+  const removable=chosen.filter(job=>!job.snapshot?.feature&&chains.get(slotKey(job)).every(item=>!item.result&&!item.remoteId&&
     (['failed','cancelled'].includes(item.status)||(item.status==='queued'&&!item.startedAt))));
   const item=state.jobs.find(job=>job.id===detail);
   const currentProvider=state.settings.providers.find(provider=>provider.id===state.settings.bindings.image);

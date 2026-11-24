@@ -9,6 +9,20 @@
   line-height: 1.7;
 }
 
+.image-category-dialog { color: inherit; }
+.image-category-dialog::backdrop { background: #152a218a; }
+.image-category-dialog .category-root, .category-dirs li {
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+}
+.image-category-dialog .category-root { align-items: baseline; padding-block: 10px; }
+.category-root strong, .category-dir-actions { flex-shrink: 0; }
+.category-root span, .category-dirs li > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.category-dirs { list-style: none; padding: 0; margin: 0; }
+.category-dirs li { padding-block: 12px; border-top: 1px solid #dce3de; }
+.category-dirs li > div:first-child { display: grid; gap: 4px; }
+.category-dirs li span, .category-root span { font-size: 13px; color: #4b5d52; }
+.category-dir-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
 .row-delete-list {
   display: grid;
   gap: 8px;

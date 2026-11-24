@@ -5,7 +5,11 @@ on:
       release_tag:
         description: Existing version tag with a locally verified Windows installer in its draft release
         required: true
-        default: v0.5.2
+        default: v0.8.0
+      untagged_candidate:
+        description: Test the selected commit and create its new tag only when publishing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -20,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag }}
+          ref: ${{ inputs.untagged_candidate && github.sha || format('refs/tags/{0}', inputs.release_tag) }}
       - name: Download and verify the original Windows installer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag }}
+          ref: ${{ inputs.untagged_candidate && github.sha || format('refs/tags/{0}', inputs.release_tag) }}
           fetch-depth: 0
       - name: Verify tagged application inputs
         shell: bash
@@ -78,7 +82,14 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           version=$(node -p 'require("./package.json").version')
           test "$RELEASE_TAG" = "v$version"
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [[ '${{ inputs.untagged_candidate }}' == 'true' ]]; then
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+            if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+              test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+            fi
+          else
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          fi
           test -s ".github/local-windows-$RELEASE_TAG.json"
       - uses: actions/setup-node@v4
         with:
@@ -188,9 +199,40 @@ jobs:
           ditto "$mounted/子云影像工坊.app" "$installed"
           codesign --verify --deep --strict "$installed"
           echo "ZIYUN_TEST_EXE=$installed/Contents/MacOS/子云影像工坊" >> "$GITHUB_ENV"
+      - name: Verify upgrade from the previous public Mac installer
+        if: matrix.platform == 'mac'
+        timeout-minutes: 8
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREVIOUS_VERSION: 0.5.4
+          MAC_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          directory=$(mktemp -d)
+          name="ZiyunStudio-$PREVIOUS_VERSION-mac-$MAC_ARCH.dmg"
+          gh release download "v$PREVIOUS_VERSION" -p "$name" -p SHA256SUMS.txt -D "$directory"
+          digest=$(awk -v name="$name" '$2 == name {print $1}' "$directory/SHA256SUMS.txt")
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s  %s\n' "$digest" "$directory/$name" | shasum -a 256 -c
+          mounted=$(mktemp -d)
+          hdiutil attach "$directory/$name" -readonly -nobrowse -mountpoint "$mounted"
+          trap 'hdiutil detach "$mounted"' EXIT
+          previous="$mounted/子云影像工坊.app"
+          codesign --verify --deep --strict "$previous"
+          node scripts/verify-mac-upgrade.mjs "$previous"
       - name: Installed application persistence
         timeout-minutes: 4
         run: node scripts/verify-installed.mjs
+      - name: Installed template editing, material import and batch replacement
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-template-studio.mjs
+          node scripts/verify-batch-materials.mjs
+          node scripts/verify-cover-workflow.mjs
       - name: Installed batch, editor and export flow
         timeout-minutes: 12
         run: node scripts/verify-batch-montage.mjs
@@ -254,7 +296,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag }}
+          ref: ${{ inputs.untagged_candidate && github.sha || format('refs/tags/{0}', inputs.release_tag) }}
       - uses: actions/download-artifact@v4
         with:
           pattern: installer-*
@@ -328,4 +370,13 @@ jobs:
             console.log(`Verified remote attachment: ${name} (${original.length} bytes, ${digest(original)})`);
           }
           NODE
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          if [[ '${{ inputs.untagged_candidate }}' == 'true' ]]; then
+            existing=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+            if [[ -n "$existing" ]]; then
+              git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+              test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+            fi
+            gh release edit "$RELEASE_TAG" --target "$GITHUB_SHA" --draft=false --latest
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi

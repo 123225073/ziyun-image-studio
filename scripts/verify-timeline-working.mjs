@@ -25,7 +25,7 @@ try {
   const page = await app.firstWindow(); page.setDefaultTimeout(15000); page.on('pageerror', error => errors.push(error.message));
   await page.getByTestId('add-row').waitFor();
   await page.setViewportSize({ width: 1513, height: 1035 });
-  await page.getByRole('button', { name: '03 混剪成片', exact: true }).click();
+  await page.getByRole('button', { name: '05 混剪成片', exact: true }).click();
   await page.getByRole('button', { name: '打开时间线', exact: true }).click();
   const editor = page.getByRole('dialog', { name: '成片时间轴', exact: true });
   await editor.locator('.timeline-clip.picture').click();

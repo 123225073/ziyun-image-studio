@@ -67,7 +67,7 @@ try{
  await call('saveProvider',{id:'test-voice',name:'本机验收语音',protocol:'openai-tts',baseUrl,model:'tts-1',key:'isolated-test-key'});
  await call('saveProvider',{id:'test-review',name:'本机验收文案校对',protocol:'openai-chat',baseUrl,model:'fixture-review',key:'isolated-test-key'});
  await call('updateSettings',{bindings:{tts:'test-voice',rewrite:'test-review'},autoExport:false});
- await page.getByRole('button',{name:'03 混剪成片',exact:true}).click();
+ await page.getByRole('button',{name:'05 混剪成片',exact:true}).click();
  await fillCandidates('A','开场一。\n开场二。\n开场三。\n开场四。');
  await fillCandidates('B','内容一。\n内容二。\n内容三。');
  const rows=page.locator('.batch-section-table tbody tr');
@@ -126,7 +126,7 @@ try{
  await editor.getByRole('button',{name:'导出编辑版',exact:true}).click();
  const rendered=await wait(state=>state.jobs.some(item=>item.kind==='montage'&&['succeeded','failed'].includes(item.status)),120000);const job=rendered.jobs.find(item=>item.kind==='montage');assert.equal(job.status,'succeeded',job.error);assert((await fs.stat(job.localPath)).size>1000);assert.equal(requests.length,12);
  await close();await launch();const restored=await call('getState');assert.equal(restored.montageDrafts.length,12);assert.deepEqual(restored.rows.map(item=>item.id),['r3','r1','r2']);assert.equal(restored.settings.jianyingDraftRoot,draftRoot);assert.equal(restored.montageSetup.sections[0].folder,A);
- await page.getByRole('button',{name:'03 混剪成片',exact:true}).click();assert.equal(await page.getByLabel('A 段候选文案 1',{exact:true}).inputValue(),'开场一。');assert.equal(await page.getByTestId('candidates-A').locator('.candidate-entry').count(),4);
+ await page.getByRole('button',{name:'05 混剪成片',exact:true}).click();assert.equal(await page.getByLabel('A 段候选文案 1',{exact:true}).inputValue(),'开场一。');assert.equal(await page.getByTestId('candidates-A').locator('.candidate-entry').count(),4);
  await page.setViewportSize({width:1050,height:800});assert(await page.locator('.main-nav').evaluate(element=>element.scrollWidth<=element.clientWidth));
  assert.deepEqual(errors,[]);
  await fs.writeFile(path.join(fixture,'result.json'),JSON.stringify({passed:true,providerCalls:requests.length,reviewCalls:reviewRequests.length,drafts:restored.montageDrafts.length,draftDirectory:exportedDir,rendered:job.localPath,duration:await mediaDuration(ffmpeg,job.localPath),errors},null,2));

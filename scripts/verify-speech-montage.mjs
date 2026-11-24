@@ -31,6 +31,11 @@ const server = http.createServer(async (request, response) => {
     let raw = '';
     for await (const part of request) raw += part;
     const body = raw ? JSON.parse(raw) : {};
+    if (request.url === '/v1/chat/completions') {
+      response.setHeader('Content-Type','application/json');
+      response.end(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'pass',summary:'校对通过',issues:[]})}}]}));
+      return;
+    }
     if (request.url === '/captions.json') {
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify([{ text: '红色收纳箱展开。', time_begin: 0, time_end: 1200 }, { text: '透明面板方便取物。', time_begin: 1200, time_end: 2400 }]));
@@ -109,7 +114,7 @@ try {
     await page.getByRole('button', { name: '添加语音合成服务', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '添加语音合成服务' });
     await dialog.getByLabel('服务平台', { exact: true }).selectOption(protocol === 'doubao-tts' ? 'doubao' : 'minimax-speech');
-    await dialog.getByText('高级设置 · 名称、服务地址与等待时间', {exact:true}).click();
+    await dialog.locator('summary').filter({hasText:'高级设置'}).click();
     await dialog.getByLabel('连接名称', { exact: true }).fill(label);
     await dialog.getByLabel('接口基础地址', { exact: true }).fill(baseUrl);
     await dialog.getByLabel('API Key', { exact: true }).fill(key);
@@ -162,6 +167,9 @@ try {
   await montage.getByRole('button', { name: '添加开头视频（可选）', exact: true }).click();
   await montage.getByLabel('片头声音策略', { exact: true }).selectOption('original');
   await montage.getByLabel('混剪任务名称', { exact: true }).fill('原声片头验收');
+  await page.evaluate(async baseUrl=>window.studio.call('saveProvider',{id:'speech-review',name:'验收校对',protocol:'openai-chat',baseUrl,model:'fixture-review',key:'local-only'}),baseUrl);
+  await montage.getByLabel('文案校对AI连接',{exact:true}).selectOption('speech-review');
+  await montage.getByRole('button',{name:'开始 AI 校对',exact:true}).click();
   await montage.getByTestId('generate-montage-drafts').click();
   await page.getByRole('dialog', { name: '成片时间轴' }).waitFor({ timeout: 60000 });
   const preparedState = await page.evaluate(() => window.studio.call('getState'));
@@ -188,7 +196,7 @@ try {
   assert(navigationFits, 'The navigation should fit the minimum supported desktop width.');
   await page.getByRole('button', { name: '01 图片素材', exact: true }).click();
   await page.getByTestId('add-row').click();
-  await page.getByRole('button', { name: '02 视频开头', exact: true }).click();
+  await page.getByRole('button', { name: '04 视频开头', exact: true }).click();
   await page.getByRole('button', { name: '加入视频生成队列', exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(fixture, 'result.json'), JSON.stringify({ passed: true, fixture, providerRequests: calls.length, voiceJobs: 2, montageDuration: duration, errors }, null, 2));

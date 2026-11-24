@@ -1,14 +1,42 @@
-export const rowCategory = code => String(code || '').trim().match(/^[a-z]+/i)?.[0].toUpperCase() || '';
+export const rowCategory = code => String(code ?? '').trim().normalize('NFKC').match(/^\p{L}[\p{L}\p{M}]*/u)?.[0].toUpperCase() || '';
+
+export function imageRowCategories(rows = []) {
+  return [...new Set(rows.map(row => rowCategory(row.code)).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }));
+}
+
+export function categoryOutputDirectory(category, settings) {
+  return settings.imageCategoryDirectories?.[category] || settings.outputDir || '';
+}
+
+// Both the download button and the queue must agree on which jobs need a picker.
+export function imageRowDestination(row, settings) {
+  if (row.outputMode === 'source-children') return { mode: 'source-children' };
+  if (row.rowOutputDir) return { mode: 'direct', root: row.rowOutputDir };
+  const subdirectory = row.folderName?.trim();
+  if (row.outputMode === 'system') {
+    return { mode: subdirectory ? 'direct' : 'batch', root: settings.outputDir || '', subdirectory };
+  }
+  const category = rowCategory(row.code);
+  const categoryRoot = category && settings.imageCategoryDirectories?.[category];
+  if (categoryRoot || subdirectory) {
+    return { mode: 'direct', root: categoryOutputDirectory(category, settings), subdirectory };
+  }
+  return { mode: 'batch', root: settings.outputDir || '' };
+}
+export const numberedRowCode = value => String(value ?? '').trim().normalize('NFKC')
+  .match(/^(\p{L}[\p{L}\p{M}]*[\s._\-—–]*)?(\d+)(?:[.。]|(_\d+))?$/u);
+
 // Continue the last row in the user's manual order. Sorting and filtering are
 // presentation only and must not change which classification is continued.
 export function nextImageRowCode(rows = []) {
-  const parts = String(rows.at(-1)?.code || '').trim().match(/^([a-z]*)(\d+)(?:[.。．]|_\d+)?$/i);
+  const parts = numberedRowCode(rows.at(-1)?.code);
   const prefix = parts?.[1]?.toUpperCase() || 'A';
   const width = Math.max(2, parts?.[2]?.length || 0);
   let number = parts ? BigInt(parts[2]) + 1n : 1n;
   const canonical = value => {
-    const match = String(value || '').trim().match(/^([a-z]+)(\d+)[.。．]?$/i);
-    return match ? `${match[1].toUpperCase()}${BigInt(match[2])}` : String(value || '').trim().toUpperCase();
+    const match = numberedRowCode(value);
+    return match ? `${(match[1] || '').toUpperCase()}${BigInt(match[2])}${match[3] || ''}` : String(value || '').trim().toUpperCase();
   };
   const occupied = new Set(rows.map(row => canonical(row.code)));
   while (occupied.has(`${prefix}${number}`)) number++;

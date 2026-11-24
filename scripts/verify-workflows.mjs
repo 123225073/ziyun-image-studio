@@ -117,7 +117,13 @@ try{
  await button('确认删除').click();
  await button('生成').click();
  await page.locator('.status-succeeded .result-image').waitFor();
- const [exported]=await call('exportJobs',(await call('getState')).jobs.filter(job=>job.status==='succeeded').map(job=>job.id));
+ await page.waitForFunction(async()=> (await window.studio.call('getState')).jobs.some(job=>job.status==='succeeded' && job.exportedPath));
+ const completed=(await call('getState')).jobs.filter(job=>job.status==='succeeded');
+ const automaticPath=completed[0].exportedPath;
+ assert.ok(automaticPath && path.relative(outputDir,automaticPath).split(path.sep)[0]!=='..',
+   '没有分类或行目录的数字编号应自动保存到输出根目录');
+ assert.deepEqual(await fs.readFile(automaticPath),await fs.readFile(completed[0].localPath));
+ const [exported]=await call('exportJobs',completed.map(job=>job.id),outputDir);
  await button('打开目录').click();
  await button('打开批次目录').click();
  assert.deepEqual(await app.evaluate(()=>globalThis.desktopCalls.folders),[outputDir,path.dirname(exported.path)]);
@@ -155,7 +161,7 @@ try{
  const record=await call('openTimeline',montage.id);
  record.timeline.clips.push({id:'music',track:'music',path:audioAsset.path,start:.3,duration:1,sourceIn:.2,volume:.2});
  await call('saveTimeline',montage.id,record.timeline);
- await button('03 混剪成片').click();
+ await button('05 混剪成片').click();
  await button('编辑成片').click();
  const editor=page.getByRole('dialog',{name:'成片时间轴'});
  await editor.getByRole('button',{name:'原始字幕。',exact:true}).click();

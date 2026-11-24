@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {visibleImageRows,reorderVisibleRows,rowCategory,nextImageRowCode} from '../shared/image-rows.mjs';
+import {visibleImageRows,reorderVisibleRows,rowCategory,nextImageRowCode,imageRowCategories,imageRowDestination} from '../shared/image-rows.mjs';
 import {StudioService} from '../electron/service.mjs';
 const rows=[{id:'a10',code:'A10',name:'十号'},{id:'b',code:'B01',name:'乙类'},{id:'a2',code:'a02',name:'二号'},{id:'n',code:'01',name:'数字'}];
 test('新增编号沿用手动列表最后一行分类递增，并跳过已有号码',()=>{
@@ -12,12 +12,28 @@ test('新增编号沿用手动列表最后一行分类递增，并跳过已有�
   assert.equal(nextImageRowCode([{code:'A99'},{code:'B01'}]),'B02');
   assert.equal(nextImageRowCode([{code:'B02'},{code:'b3'},{code:'B01'}]),'B04');
   assert.equal(nextImageRowCode([{code:'AB009'}]),'AB010');
+  assert.equal(nextImageRowCode([{code:'咨询截图-009'}]),'咨询截图-010');
   assert.equal(nextImageRowCode([{code:'03'}]),'A04');
   assert.equal(nextImageRowCode([{code:'A01.'}]),'A02');
   assert.equal(nextImageRowCode([{code:'A01'},{code:'自定义名称'}]),'A02');
   const before=structuredClone(rows);
   assert.equal(nextImageRowCode(rows),'A03');
   assert.deepEqual(rows,before);
+});
+test('全部实际编号提取分类，中文和分隔符与筛选及保存目录一致',()=>{
+  const codes=['咨询截图01','咨询截图_02','Ａ-02','ab_1','Ｂ03','002','a03','C—01'];
+  const tasks=codes.map(code=>({code,name:code}));
+  assert.deepEqual(new Set(imageRowCategories(tasks)),new Set(['咨询截图','A','AB','B','C']));
+  assert.deepEqual(visibleImageRows(tasks,{category:'咨询截图'}).map(r=>r.code),codes.slice(0,2));
+  assert.deepEqual(visibleImageRows(tasks,{category:'#'}).map(r=>r.code),['002']);
+  const settings={outputDir:'/root',imageCategoryDirectories:{咨询截图:'/category',OLD:'/hidden'}};
+  for(const code of codes.slice(0,2)) {
+    assert.equal(imageRowDestination({code},settings).root,'/category');
+    assert.deepEqual(imageRowDestination({code,folderName:'本月'},settings),{mode:'direct',root:'/category',subdirectory:'本月'});
+    assert.deepEqual(imageRowDestination({code,rowOutputDir:'/row'},settings),{mode:'direct',root:'/row'});
+    assert.equal(imageRowDestination({code,outputMode:'system'},settings).root,'/root');
+  }
+  for(const code of ['02','D-1']) assert.deepEqual(imageRowDestination({code},settings),{mode:'batch',root:'/root'});
 });
 test('长编号递增不丢精度，溢出编号长度时明确报错',()=>{
   assert.equal(nextImageRowCode([{code:'B999999999999999999999'}]),'B1000000000000000000000');

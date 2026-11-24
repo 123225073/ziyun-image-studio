@@ -1,4 +1,5 @@
 import { planImageImport } from '../shared/image-import-selection.mjs';
+import { imageBatchCodeKey } from '../shared/image-batch-import.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -58,6 +59,16 @@ test('扫描只读取直接母图，目录编号解析且预览不创建子图�
   assert(plan.rows[0].warnings.length); assert.equal(service.state.rows.length, 0);
   assert.equal(await fs.stat(path.join(b, '子图')).catch(() => null), null);
   assert.deepEqual(await fs.readdir(path.join(a, '子图')), ['已有结果.png']);
+});
+
+test('母图文件夹保留中文分类编号，并按原分类识别补零的重复编号', async t => {
+  const {sourceRoot} = await fixture(t);
+  await typeFolder(sourceRoot, '美妆01-海报');
+  await typeFolder(sourceRoot, '咨询截图-０２_咨询记录');
+  const preview = await scanImageFolderImport(sourceRoot);
+  assert.deepEqual(Object.fromEntries(preview.rows.map(row=>[row.name,row.code])),{'海报':'美妆01','咨询记录':'咨询截图-02'});
+  assert.equal(imageBatchCodeKey('美妆01'),imageBatchCodeKey('美妆1'));
+  assert.equal(imageBatchCodeKey('咨询截图-02'),imageBatchCodeKey('咨询截图-2'));
 });
 
 test('多母图和未命名多图可一起使用，零图、无效图片、冲突输出与超过16张逐行拒绝', async t => {
@@ -151,7 +162,7 @@ test('自动导出关闭时等待手动操作，混合普通行缺根目录预�
   const jobs = await service.enqueueImages(service.state.rows.map(row => row.id)); await service.setPaused(false);
   await waitFor(service, state => state.jobs.every(job => job.status === 'succeeded'));
   assert.equal(await fs.stat(path.join(folder, '子图')).catch(() => null), null);
-  await assert.rejects(service.exportJobs(jobs.map(job => job.id)), /普通任务需要/);
+  await assert.rejects(service.exportJobs(jobs.map(job => job.id)), /选择导出目录.*输出根目录/);
   assert.equal(await fs.stat(path.join(folder, '子图')).catch(() => null), null);
   const result = await service.exportJobs(jobs.map(job => job.id), path.join(root, '常规输出'));
   assert.equal(path.dirname(result[0].path), path.join(folder, '子图'));
@@ -216,4 +227,32 @@ test('生成失败后重试保留母图/子图映射，不读已有子图且不�
   await waitFor(service, state => state.jobs.length === 2 && state.jobs[1].exportedPath);
   assert.equal(path.dirname(service.state.jobs[1].exportedPath), path.join(folder, '子图')); assert.equal(calls, 2);
   await service.retryJobs([jobs[0].id]); assert.equal(service.state.jobs.length, 2); assert.equal(calls, 2);
+});
+
+test('单行目录输入清空再填回旧绝对路径，子图绑定与独立目录保持原目标，新绝对文本不能冒充旧授权',async t=>{
+  const {root,sourceRoot,service}=await fixture(t);
+  const folder=await typeFolder(sourceRoot,'A01-原目录',['母图.png'],true);
+  const child=path.join(folder,'子图'),direct=path.join(root,'原行目录'),fallback=path.join(root,'全局分类');
+  await fs.mkdir(direct);
+  await importRoot(service,sourceRoot);
+  const bound=service.state.rows[0];
+  const ordinary=await service.saveRow({code:'B01',name:'独立行',sourceMode:'text',userPrompt:'参考测试',rowOutputDir:direct});
+  await service.updateSettings({outputDir:fallback,autoExport:true});
+  for(const [row,display] of [[bound,child],[ordinary,direct]]) {
+    // Same payload generated when the single visible field is cleared then restored.
+    const edit={...row,userPrompt:'保持主体',folderName:display,rowOutputDir:'',outputMode:undefined,clearOutputMapping:true};
+    await assert.rejects(service.saveRow({...edit,folderName:path.join(root,'其他绝对路径')}),/相对名称|文件夹/);
+    const restored=await service.saveRow(edit);
+    if(row===bound) {
+      assert.equal(restored.outputMode,'source-children');assert.equal(restored.sourceFolder,folder);
+      assert.deepEqual(restored.sourcePaths,row.sourcePaths);assert.equal(restored.folderName,child);
+    } else {assert.equal(restored.rowOutputDir,direct);assert.equal(restored.folderName,'');}
+  }
+  await service.enqueueImages([bound.id,ordinary.id]);
+  await service.setPaused(false);
+  await waitFor(service,s=>s.jobs.length===2 && s.jobs.every(j=>j.exportedPath));
+  for(const [row,expected] of [[bound,child],[ordinary,direct]]) {
+    const output=service.state.jobs.find(j=>j.rowId===row.id).exportedPath;
+    assert.equal(path.dirname(output),expected);assert.deepEqual(await fs.readFile(output),PNG);
+  }
 });

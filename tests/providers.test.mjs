@@ -102,6 +102,64 @@ test('GPT Image 2.5 submits source and 3:4 edits with the requested model',()=>f
   assert.ok(w%16===0 && h%16===0 && w*h>=655360);
 }));
 
+test('GPT Image 2.6 first sends the selected 9:16 size, then uses the closest allowed edit size',()=>fixtures(async({image})=>{
+  const sizes = [];
+  const context = ctx('openai-images', async (url, options) => {
+    assert.equal(url, 'https://test.invalid/v1/images/edits');
+    assert.equal(options.body.get('model'), 'gpt-image-2.6-sunburst');
+    assert.deepEqual(Buffer.from(await options.body.get('image').arrayBuffer()), png);
+    sizes.push(options.body.get('size'));
+    if (sizes.length === 1) return new Response(JSON.stringify({
+      error: { param: 'size', code: 'invalid_value', message: 'Supported sizes: 1024x1024, 1536x1024, 1024x1536.' },
+    }), { status: 400 });
+    const output = Buffer.from(png);
+    output.writeUInt32BE(1024, 16);
+    output.writeUInt32BE(1536, 20);
+    return response({ data: [{ b64_json: output.toString('base64') }] });
+  }, 'gpt-image-2.6-sunburst');
+  const result = await runProvider('image', { prompt: '保持原图布局', referencePaths: [image], ratio: '9:16' }, context);
+  assert.deepEqual(sizes, ['864x1536', '1024x1536']);
+  assert.equal(result.images[0].requestedSize, '864x1536');
+  assert.equal(result.images[0].submittedSize, '1024x1536');
+  assert.equal(result.images[0].actualSize, '1024x1536');
+  assert.match(result.warning, /已自动改用1024x1536/);
+}));
+
+test('generic image models get the requested size and fall back to a lower resolution at the same ratio', async () => {
+  const sizes = [];
+  const context = ctx('openai-images', async (_url, options) => {
+    sizes.push(JSON.parse(options.body).size);
+    if (sizes.length === 1) return new Response('Output size is not supported.', { status: 422 });
+    return response({ data: [{ url: 'https://test.invalid/image.png' }] });
+  }, 'custom-image-model');
+  const result = await runProvider('image', { prompt: '风景', ratio: '16:9', resolution: '4K' }, context);
+  assert.deepEqual(sizes, ['3840x2160', '2048x1152']);
+  assert.equal(result.images[0].submittedSize, '2048x1152');
+});
+
+test('image retry omits an explicitly unsupported size field and leaves unrelated rejections alone', async () => {
+  for (const error of [
+    { param: 'size', code: 'unknown_parameter' },
+    { param: 'image', message: 'Reference image size must not exceed the upload limit.' },
+    { message: 'Reference image aspect ratio is invalid.' },
+  ]) {
+    const sizes = [];
+    const context = ctx('openai-images', async (_url, options) => {
+      sizes.push(JSON.parse(options.body).size);
+      if (sizes.length === 1) return new Response(JSON.stringify({ error }), { status: 400 });
+      return response({ data: [{ url: 'https://test.invalid/image.png' }] });
+    }, 'custom-image-model');
+    const result = runProvider('image', { prompt: '风景', ratio: '9:16' }, context);
+    if (error.param === 'size') {
+      assert.equal((await result).images[0].submittedSize, 'auto');
+      assert.deepEqual(sizes, ['864x1536', undefined]);
+    } else {
+      await assert.rejects(result, { status: 400 });
+      assert.deepEqual(sizes, ['864x1536']);
+    }
+  }
+});
+
 test('describe sends actual image bytes and excludes user requested changes',()=>fixtures(async({image})=>{
   const context=ctx('openai-chat',async(url,options)=>{
     assert.equal(url,'https://test.invalid/v1/chat/completions');const body=JSON.parse(options.body);
@@ -135,11 +193,10 @@ test('reference edit uses real multipart image and fixed one-image slot',()=>fix
   const context=ctx('openai-images',async(url,o)=>{assert.equal(url,'https://test.invalid/v1/images/edits');assert(o.body instanceof FormData);assert(!o.headers['Content-Type']);assert.equal(o.body.get('n'),'1');assert.equal(o.body.get('size'),'864x1536');assert.deepEqual(Buffer.from(await o.body.get('image').arrayBuffer()),png);return response({data:[{b64_json:png.toString('base64')}]});});
   const r=await runProvider('image',{prompt:'保留构图，背景改蓝',referencePaths:[image],ratio:'9:16',resolution:'1K'},context);assert.equal(r.images[0].mime,'image/png');assert.deepEqual(r.images[0].bytes,png);assert.equal(r.images[0].requestedSize,'864x1536');assert.equal(r.images[0].actualSize,'1x1');assert(r.warning.includes('与请求'));
 }));
-test('text generation uses generations route; unsupported size rejects before any request',async()=>{
+test('text generation uses the generations route and invalid UI ratios are rejected locally',async()=>{
   let calls=0;const context=ctx('openai-images',async(url,o)=>{calls++;assert(url.endsWith('/images/generations'));assert.equal(JSON.parse(o.body).size,'2048x2048');return response({data:[{url:'https://media.invalid/image.png'}]});});
   assert.equal((await runProvider('image',{prompt:'风景',ratio:'1:1',resolution:'2K'},context)).images[0].url,'https://media.invalid/image.png');
   await assert.rejects(runProvider('image',{prompt:'风景',ratio:'7:3',resolution:'2K'},context),/比例/);assert.equal(calls,1);
-  await assert.rejects(runProvider('image',{prompt:'风景',ratio:'9:16',resolution:'1K'}, {...context,provider:{...context.provider,model:'gpt-image-1'}}),/比例/);
 });
 test('MiniMax H3 V2 reference video carries bytes, roles and persists ID before returning',()=>fixtures(async({image,video})=>{
   const ids=[];const context=ctx('minimax-video',async(url,o)=>{assert.equal(url,'https://test.invalid/v2/video_generation');const b=JSON.parse(o.body);assert.equal(b.model,'MiniMax-H3');assert.equal(b.content[1].type,'image_url');assert.equal(b.content[1].role,'reference_image');assert(b.content[2].video_url.url.startsWith('data:video/mp4;base64,'));assert.equal(b.content[2].role,'reference_video');return response({task_id:'task_123'});},'MiniMax-H3');context.onRemoteId=async id=>ids.push(id);

@@ -142,7 +142,7 @@ export default function TimelineEditor({record,call,choose,media,run,setDirty,on
 
  return <div className="timeline-overlay" role="dialog" aria-modal="true" aria-label="成片时间轴">
   <header className="timeline-header">
-   <div><small>03 混剪成片 / 时间轴 · {dirty?'有未保存修改':'已保存'}</small><h2>{record.name}</h2></div>
+   <div><small>05 混剪成片 / 时间轴 · {dirty?'有未保存修改':'已保存'}</small><h2>{record.name}</h2></div>
    <div className="actions">
     <button className="button" disabled={working} onClick={close}>返回成片</button>
     <button className="button" disabled={working||!dirty} onClick={()=>persist(false)}>保存草稿</button>

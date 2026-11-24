@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { StudioStore } from './store.mjs';
+import {analyzeCoverLayout} from './cover-layout.mjs';
 import { downloadMedia, imageDimensions, sniffMedia } from './providers.mjs';
 import { DEFAULT_TEMPLATES } from './default-rules.mjs';
 import { normalizeTimeline } from '../shared/timeline.mjs';
@@ -12,7 +13,7 @@ import { TTS_PROTOCOLS, SPEECH_CATALOGS, normalizeSpeechOptions, speechCacheKey 
 import { planMontage as buildMontagePlan, montageUtterances } from '../shared/montage-planner.mjs';
 import { toSrt } from './render.mjs';
 import { alignSections } from '../shared/montage-batch.mjs';
-import { nextImageRowCode } from '../shared/image-rows.mjs';
+import { imageRowDestination, nextImageRowCode, rowCategory } from '../shared/image-rows.mjs';
 import { imageBatchCodeKey } from '../shared/image-batch-import.mjs';
 import { pathKey, validateImageFolderMapping } from './image-folder-import.mjs';
 import { reviewSource, reviewTextKey, montageReviewCombination, montageReviewRequest, montageSuggestionRequest, parseMontageReview, parseMontageSuggestion, montageBindingReviewRequest, applyMontageBindingReview } from './montage-review.mjs';
@@ -21,7 +22,7 @@ import { normalizeMontageBindings, montageBindingProblems, montageVisualFragment
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
 const TERMINAL = new Set(['succeeded', 'failed', 'unknown', 'cancelled']);
 const DEFAULTS = {
-  projectName: '未命名项目', outputDir: '', autoExport: true, concurrency: 10,
+  projectName: '未命名项目', outputDir: '', imageCategoryDirectories: {}, autoExport: true, concurrency: 10,
   videoConcurrency: 2, renderConcurrency: 1, paused: false, panelOpen: true,
   providers: [], bindings: { vision: '', image: '', video: '', tts: '', rewrite: '', montageVision: '' }, templates: [], defaultTemplateId: '',
   speechPresets: [], defaultSpeechPresetId: '', speechConcurrency: 2,
@@ -215,11 +216,13 @@ async function directoryUnder(base, segments = []) {
 function normalizedRow(row, previous) {
   return {
     id: previous?.id || row.id || uid(), code: String(row.code ?? previous?.code ?? ''), name: String(row.name ?? previous?.name ?? ''),
-    sourceMode: row.sourceMode === 'folder' ? 'folder' : 'single', sourcePaths: Array.isArray(row.sourcePaths) ? [...new Set(row.sourcePaths.map(String))] : [],
+    sourceMode: ['folder','text'].includes(row.sourceMode) ? row.sourceMode : 'single', sourcePaths: Array.isArray(row.sourcePaths) ? [...new Set(row.sourcePaths.map(String))] : [],
     referenceMode: (row.referenceMode ?? previous?.referenceMode) === 'all' ? 'all' : 'rotate',
     referencePrompt: String(row.referencePrompt ?? ''), userPrompt: String(row.userPrompt ?? ''),
     count: integer(row.count, 1, 500), ratio: String(row.ratio || 'source'), resolution: String(row.resolution || '1K'),
     templateId: String(row.templateId ?? previous?.templateId ?? ''), folderName: String(row.folderName || ''),
+    ...(row.rowOutputDir ? { rowOutputDir: String(row.rowOutputDir) } : {}),
+    ...(row.outputMode === 'system' ? { outputMode: 'system' } : {}),
     imageBatch: previous?.imageBatch || null, imageBatchNumber: previous?.imageBatchNumber || 0,
     ...(previous?.batchImport ? { batchImport: clone(previous.batchImport) } : {}),
     ...(!row.clearOutputMapping && previous?.outputMode === 'source-children' ? {
@@ -231,6 +234,9 @@ function normalizedRow(row, previous) {
     variations: Array.isArray(row.variations) ? row.variations.map(String).slice(0, 500) : [],
   };
 }
+
+import {enqueueTemplateEdit,saveTemplateDraft,finishTemplateRegions,assertStudioImageDecodable} from './template-studio.mjs';
+import {batchReplaceMethods,assertReplacementRetry,migrateCoverPreview} from './batch-replace.mjs';
 
 export class StudioService {
   static async create({ dataDir, providerRunner, onChange, renderRunner, videoDownloadFetch, inspectAudio, concatSpeech, montageScanner } = {}) {
@@ -280,6 +286,7 @@ export class StudioService {
         if (job.status === 'unknown' && job.startedAt) job.finishedAt = job.updatedAt;
       }
     }
+    migrateCoverPreview(state);
     const service = new StudioService({ dataDir: path.resolve(dataDir), store, state, providerRunner, onChange, renderRunner, videoDownloadFetch, inspectAudio, concatSpeech, montageScanner });
     service.persist();
     service.schedule();
@@ -312,12 +319,37 @@ export class StudioService {
     }
     return state;
   }
+  enqueueTemplateEdit(input) { return enqueueTemplateEdit(this,input,checkImage,this.imageCodec); }
+  saveTemplateDraft(input) { return saveTemplateDraft(this,input); }
+  setTemplateResultVisibility(id,visible) {
+    return this.serializeSubmission(()=>{
+      this.assertOpen();
+      const job=this.state.jobs.find(item=>item.id===id);
+      if(job?.snapshot?.feature!=='template-edit' || !['succeeded','failed','cancelled'].includes(job.status) || typeof visible!=='boolean')
+        throw new Error('只能移除已结束的模板调试记录。');
+      const hidden=!visible;
+      if(Boolean(job.templateResultHidden)!==hidden){
+        job.templateResultHidden=hidden;
+        this.changed();
+      }
+    });
+  }
+
   async getState() { return this.publicState(); }
+  analyzeCoverLayout(file, options) { return analyzeCoverLayout(this,file,options); }
 
   async updateSettings(patch = {}) {
     this.assertOpen();
     const next = { ...this.state.settings };
     for (const key of ['projectName', 'outputDir', 'lastImageDirectory', 'jianyingDraftRoot']) if (key in patch) next[key] = String(patch[key]);
+    if (patch.imageCategoryDirectory) {
+      const { category, directory } = patch.imageCategoryDirectory;
+      if (typeof category !== 'string' || !category || rowCategory(category) !== category || typeof directory !== 'string' || (directory && !path.isAbsolute(directory))) throw new Error('请选择有效的编号分类和输出目录。');
+      const directories = { ...next.imageCategoryDirectories };
+      if (directory) directories[category] = directory;
+      else delete directories[category];
+      next.imageCategoryDirectories = directories;
+    }
     if ('imageTypeNames' in patch) {
       if (!Array.isArray(patch.imageTypeNames) || patch.imageTypeNames.length > 100) throw new Error('图片分类最多维护 100 项。');
       const names = patch.imageTypeNames.map(name => String(name).trim().normalize('NFKC'));
@@ -383,12 +415,23 @@ export class StudioService {
       this.assertOpen();
       const index = this.state.rows.findIndex(item => item.id === row.id);
       if (index < 0 && !String(row.code || '').trim()) row = { ...row, code: nextImageRowCode(this.state.rows) };
-      const saved = normalizedRow(index < 0 && row.templateId == null ? {...row, templateId:this.state.settings.defaultTemplateId} : row, this.state.rows[index]);
+      const previous = this.state.rows[index];
+      if (!trustedOutputMapping && row.clearOutputMapping && !row.rowOutputDir && row.folderName) {
+        if (previous?.outputMode === 'source-children' && row.folderName === previous.folderName)
+          row = {...row, clearOutputMapping:false};
+        else if (previous?.rowOutputDir && row.folderName === previous.rowOutputDir)
+          row = {...row, rowOutputDir:previous.rowOutputDir, folderName:''};
+      }
+      const saved = normalizedRow(index < 0 && row.templateId == null ? {...row, templateId:this.state.settings.defaultTemplateId} : row, previous);
+      if (saved.rowOutputDir && !path.isAbsolute(saved.rowOutputDir)) throw new Error('本行独立目录需要使用完整路径。');
+      if (!trustedOutputMapping && saved.outputMode !== 'source-children' && saved.folderName &&
+          row.clearOutputMapping &&
+          (/^[\\/]|[<>:"|?*\u0000-\u001f]/.test(saved.folderName) || saved.folderName.split(/[\\/]/).some(part => part === '..' || part === '.')))
+        throw new Error('本行保存子目录请填写相对名称。指定完整路径时，请点击输入框旁的文件夹。');
       if (trustedOutputMapping) {
         Object.assign(saved, { outputMode: 'source-children', sourceRoot: trustedOutputMapping.sourceRoot, sourceFolder: trustedOutputMapping.sourceFolder, folderName: trustedOutputMapping.outputPath });
         await validateImageFolderMapping(saved);
       }
-      const previous = this.state.rows[index];
       if (previous && saved.count < previous.count && this.currentImages(saved.id).some(job => job.slot >= saved.count)) {
         throw new Error('现有占位超出新数量。请先删除超出的失败占位，或归档当前批次。');
       }
@@ -442,7 +485,7 @@ export class StudioService {
         }
       };
       assertAvailable();
-      const row = normalizedRow({ ...entry.values, id: uid(), code, clearOutputMapping: true }, previousRow);
+      const row = normalizedRow({ ...entry.values, rowOutputDir: undefined, id: uid(), code, clearOutputMapping: true }, previousRow);
       delete row.batchImport;
       const mapping = entry.outputMapping || (entry.folderPath && { ...entry, sourceFolder: entry.folderPath });
       if (mapping) {
@@ -971,8 +1014,10 @@ export class StudioService {
       const batches = [];
       // Validate the entire request before creating any job.
       for (const id of [...new Set(rowIds)]) {
-        const row = this.state.rows.find(item => item.id === id);
-        if (!row) throw new Error('所选行已不存在，请刷新后重新选择。');
+        const stored = this.state.rows.find(item => item.id === id);
+        if (!stored) throw new Error('所选行已不存在，请刷新后重新选择。');
+        // Preserve the editable image configuration when switching modes. Text jobs use only the text prompt.
+        const row = stored.sourceMode === 'text' ? { ...stored, sourcePaths: [], referencePrompt: '' } : stored;
         const occupied = new Set(this.currentImages(row.id).map(job => job.slot));
         const slots = Array.from({ length: row.count }, (_, slot) => slot)
           .filter(slot => !occupied.has(slot)).slice(0, Math.max(0, row.count - occupied.size));
@@ -1025,6 +1070,7 @@ export class StudioService {
       this.assertOpen();
       const created = [];
       for (const { row, pool, template, slots, imagePlanning, planningNote, storedRow, number, imageBatch } of batches) {
+        const imageDestination = imageRowDestination(row, this.state.settings);
         storedRow.imageBatchNumber = number;
         storedRow.imageBatch = imageBatch;
         for (const slot of slots) {
@@ -1037,7 +1083,7 @@ export class StudioService {
           const lock = explicit ? '锁定规则：差异只可作用于用户或所选规范明确授权的字段。所有其他原图内容、主体身份、界面、布局及用户禁止/固定项保持不变；计划不得覆盖原稿、用户要求和规范。' : '';
           const prompt = [row.referencePrompt.trim(), row.userPrompt.trim(), template?.text.trim(), explicit, lock].filter(Boolean).join('\n\n');
           const variationPlan = explicit ? { source: 'explicit', slot, text: explicit } : null;
-          const job = this.newJob('image', { row, provider, template, sourcePool: pool, variationPlan, ...(!explicit && imagePlanning ? { imagePlanning } : {}), imageBatch:clone(imageBatch), outputDir, autoExport }, { rowId: row.id, slot, prompt, referencePaths, ...(!explicit && planningNote ? { planningNote } : {}) });
+          const job = this.newJob('image', { row, provider, template, sourcePool: pool, variationPlan, ...(!explicit && imagePlanning ? { imagePlanning } : {}), imageBatch:clone(imageBatch), outputDir, autoExport, imageDestination }, { rowId: row.id, slot, prompt, referencePaths, ...(!explicit && planningNote ? { planningNote } : {}) });
           this.state.jobs.push(job); created.push(job);
         }
       }
@@ -1520,8 +1566,12 @@ export class StudioService {
       if (!regenerate && jobs.some(job => job.status === 'unknown' && !(job.kind === 'video' && job.remoteId))) throw new Error('状态未知的任务可能已经计费，请核对服务商记录后明确选择重新生成。');
       const provider = useCurrentImageProvider && jobs.length ? this.provider('image') : null;
       const changed = [];
+      let replacementConflict;
       for (const job of jobs) {
-        if (job.kind === 'image' && (job.slot >= (this.state.rows.find(row => row.id === job.rowId)?.count || 0) || this.jobChain(job).some(item => item.status === 'succeeded'))) continue;
+        if (job.kind === 'image') {
+          const row = job.snapshot?.feature ? job.snapshot.row : this.state.rows.find(row => row.id === job.rowId);
+          if (job.slot >= (row?.count || 0) || this.jobChain(job).some(item => item.status === 'succeeded')) continue;
+        }
         if (this.active.has(job.id) || (!regenerate && job.status !== 'failed' && !(job.status === 'unknown' && job.kind === 'video' && job.remoteId))) continue;
         if (!regenerate && job.result && (job.result.images?.length || job.result.url || job.result.localPath)) {
           job.startedAt = null; job.finishedAt = null;
@@ -1534,10 +1584,15 @@ export class StudioService {
         if (!TERMINAL.has(job.status)) continue;
         // Deduplicate repeated retry clicks while another attempt occupies a slot.
         if (this.jobChain(job).some(other => other.id !== job.id && !TERMINAL.has(other.status))) continue;
+        if (job.snapshot?.feature === 'batch-replace') {
+          try { assertReplacementRetry(this.state.jobs,job); }
+          catch (error) { replacementConflict = error; continue; }
+        }
         const next = this.newJob(job.kind, { ...clone(job.snapshot), originId: job.snapshot?.originId || job.id, ...(regenerate && ['speech', 'montage'].includes(job.kind) ? { speechRevision: uid() } : {}) }, { rowId: job.rowId, slot: job.slot, attempt: Math.max(...this.jobChain(job).map(item => item.attempt)) + 1, prompt: job.prompt, referencePaths: clone(job.referencePaths), providerId: job.providerId, ...(job.planningNote ? { planningNote: job.planningNote } : {}), ...(!regenerate && job.kind === 'montage' && job.checkpoint ? { checkpoint: clone(job.checkpoint) } : {}) });
         if (provider) { next.snapshot.provider = provider; next.providerId = provider.id; }
         this.state.jobs.push(next); changed.push(next);
       }
+      if (!changed.length && replacementConflict) throw replacementConflict;
       this.changed(); this.schedule(); return clone(changed);
     });
   }
@@ -1755,7 +1810,11 @@ export class StudioService {
         if (this.closing || signal.aborted) return;
         this.updateJob(job, { status: 'running', error: '' });
         imageStage = 'model-request';
-        const result = await this.callProvider('image', { prompt: job.prompt, referencePaths: job.referencePaths, ratio: job.snapshot.row.ratio, resolution: job.snapshot.row.resolution, count: 1 }, { provider: job.snapshot.provider, signal, onRemoteId: id => this.recordRemote(job, id) });
+        const editSize = job.snapshot.templateEdit?.editSize;
+        const result = await this.callProvider('image', {
+          prompt: job.prompt, referencePaths: job.referencePaths, ratio: job.snapshot.row.ratio,
+          resolution: job.snapshot.row.resolution, count: 1, ...(editSize && {editSize}),
+        }, { provider: job.snapshot.provider, signal, onRemoteId: id => this.recordRemote(job, id) });
         // A successful provider response may already be billed even without a
         // remote ID (for example base64 image APIs). Until a recoverable result
         // has been persisted, any local failure must prohibit ordinary resubmit.
@@ -1771,7 +1830,7 @@ export class StudioService {
           await fsp.writeFile(stagedPath, Buffer.from(image.bytes), { flag: 'wx' });
           persisted = { stagedPath, mime: image.mime };
         } else persisted = { url: image.url, mime: image.mime };
-        for (const key of ['requestedSize', 'width', 'height', 'actualSize', 'warning']) if (image[key] !== undefined) persisted[key] = image[key];
+        for (const key of ['requestedSize', 'submittedSize', 'width', 'height', 'actualSize', 'warning']) if (image[key] !== undefined) persisted[key] = image[key];
         if (this.closing) return;
         this.updateJob(job, { status: 'saving', remoteId: String(result.remoteId || job.remoteId || ''), warning: String(result.warning || image.warning || ''), result: { images: [persisted] } });
         await this.saveResult(job, signal);
@@ -1896,8 +1955,13 @@ export class StudioService {
       if (!bytes.length) throw new Error('下载文件为空；可重试下载。');
       let extension = '.mp4';
       if (job.kind === 'image') {
+        if (job.snapshot.feature === 'template-edit' && job.snapshot.templateEdit?.regions?.length) {
+          bytes = await finishTemplateRegions(job,bytes,this.imageCodec);
+        } else if (job.snapshot.feature === 'template-edit' || job.snapshot.feature === 'batch-replace') {
+          await assertStudioImageDecodable(bytes,this.imageCodec);
+        }
         const type = imageType(bytes); if (!type) throw new Error('模型返回内容不是有效图片；已保留结果供核查。'); extension = type.ext;
-        const dimensions = imageDimensions(sniffMedia(bytes), item.requestedSize);
+        const dimensions = imageDimensions(sniffMedia(bytes), item.requestedSize, item.submittedSize);
         Object.assign(item, dimensions);
         if (dimensions.warning) job.warning = dimensions.warning;
       }
@@ -1920,8 +1984,14 @@ export class StudioService {
     if (this.closing) return;
     this.updateJob(job, { localPath, result: { ...job.result, localPath }, status: 'succeeded', error: '' });
     // Local success remains usable even if an external output drive is offline.
-    if (job.snapshot.autoExport && (job.snapshot.outputDir || (job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children'))) {
-      try { const exported = await this.exportOne(job, job.snapshot.outputDir); if (!this.closing) this.updateJob(job, { exportedPath: exported, exportError: '' }); }
+    let imageDestination = null;
+    if(job.snapshot.feature==='template-edit' && job.snapshot.outputDir)
+      imageDestination = {mode:'direct', root:job.snapshot.outputDir};
+    else if(job.kind==='image' && job.snapshot.row && !job.snapshot.feature)
+      imageDestination = job.snapshot.imageDestination || imageRowDestination(job.snapshot.row, {outputDir:job.snapshot.outputDir});
+    const automaticDirectory = imageDestination ? imageDestination.root : job.snapshot.outputDir;
+    if (job.snapshot.autoExport && (automaticDirectory || imageDestination?.mode === 'source-children')) {
+      try { const exported = await this.exportOne(job, automaticDirectory, imageDestination); if (!this.closing) this.updateJob(job, { exportedPath: exported, exportError: '' }); }
       catch (error) { if (!this.closing) this.updateJob(job, { exportError: redact(error.message || error) }); }
     }
     // Once a local file is confirmed, binary responses need no duplicate copy in SQLite.
@@ -1932,16 +2002,18 @@ export class StudioService {
     }
   }
 
-  async exportOne(job, outputDir) {
-    if (!job.localPath || !(await fsp.stat(job.localPath).catch(() => null))?.isFile()) throw new Error('成功文件已被移动或删除，无法导出。');
+  async exportOne(job, outputDir, imageDestination, sourcePath = job.localPath) {
+    if (!sourcePath || !(await fsp.stat(sourcePath).catch(() => null))?.isFile()) throw new Error('成功文件已被移动或删除，无法导出。');
     const folder = job.snapshot.row?.folderName || job.snapshot.row?.name || job.snapshot.config?.name || job.kind;
-    const sourceChildren = job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children';
+    const direct = imageDestination?.mode === 'direct';
+    const sourceChildren = !direct && job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children';
+    const segments = direct ? (imageDestination.subdirectory || '').split(/[\\/]+/).filter(Boolean) : job.kind === 'image' ? imageOutputFolders(job) : [folder];
     const directory = sourceChildren
       ? await validateImageFolderMapping(job.snapshot.row, { createOutput: true, checkMother: false })
-      : await directoryUnder(path.resolve(outputDir), job.kind === 'image' ? imageOutputFolders(job) : [folder]);
-    const source = path.resolve(job.localPath);
-    const stem = sourceChildren ? `${safeSegment(job.snapshot.row.code)}_${String(job.slot + 1).padStart(4, '0')}_${job.id.slice(0, 8)}`
-      : job.kind === 'speech' ? `${safeSegment(job.snapshot.config.name)}_${job.slot + 1}_${path.parse(source).name.slice(0, 8)}` : safeSegment(path.parse(source).name);
+      : await directoryUnder(path.resolve(outputDir), segments);
+    const source = path.resolve(sourcePath);
+    const stem = sourceChildren || direct ? `${safeSegment(job.snapshot.row.code)}_${String(job.slot + 1).padStart(4, '0')}_${job.id.slice(0, 8)}`
+      : job.kind === 'speech' ? `${safeSegment(job.snapshot.config.name)}_${job.slot + 1}_${path.parse(source).name.slice(0, 8)}` : safeSegment(path.parse(job.localPath).name);
     const extension = path.extname(source).toLowerCase();
     for (let suffix = 0; suffix < 10000; suffix++) {
       const target = path.join(directory, `${stem}${suffix ? `_${suffix}` : ''}${extension}`);
@@ -1973,19 +2045,45 @@ export class StudioService {
       if (error.code !== 'EEXIST' || !(await fsp.readFile(source)).equals(await fsp.readFile(destination))) throw new Error('配音已导出，但字幕文件冲突或无法导出，请检查输出目录。');
     }
   }
+  async recoverImageExport(id, directory) {
+    this.assertOpen();
+    const job = this.state.jobs.find(item => item.id === id);
+    if (job?.kind !== 'image' || !job.snapshot?.row || job.snapshot.feature || job.status !== 'succeeded' || !job.localPath) throw new Error('请选择一张已生成并保存在本机的图片素材。');
+    if (!directory || !path.isAbsolute(directory)) throw new Error('请选择本次另存的目标文件夹。');
+    const exportedPath = await this.exportOne(job, directory, {mode:'direct'});
+    job.exportedPath = exportedPath;
+    job.exportError = '';
+    this.changed();
+    return exportedPath;
+  }
+
   async exportJobs(ids, outputDir) {
     this.assertOpen();
-    const destination = outputDir || this.state.settings.outputDir;
     const set = ids ? new Set(ids) : null;
     const jobs = this.state.jobs.filter(job => (set ? set.has(job.id) : job.selected) && job.status === 'succeeded');
     if (!jobs.length) throw new Error('所选任务没有成功文件可导出。');
-    if (!destination && jobs.some(job => job.kind !== 'image' || job.snapshot.row?.outputMode !== 'source-children')) throw new Error('所选普通任务需要先选择导出目录；母图目录任务会回到各自的子图目录。');
-    // Validate every trusted destination before exporting any item in a mixed batch.
-    for (const job of jobs) if (job.kind === 'image' && job.snapshot.row?.outputMode === 'source-children') await validateImageFolderMapping(job.snapshot.row, { checkMother: false });
+    const targets = jobs.map(job => {
+      const rule = job.kind === 'image' && job.snapshot.row && !job.snapshot.feature ? imageRowDestination(job.snapshot.row, this.state.settings) : null;
+      // A prompted directory applies only to unbound tasks in a mixed selection.
+      const root = rule?.mode === 'direct' || rule?.mode === 'batch' ? rule.root || outputDir
+        : outputDir || this.state.settings.outputDir;
+      return { job, rule, root };
+    });
+    if (targets.some(({ rule, root }) => !root && rule?.mode !== 'source-children')) throw new Error('请先选择导出目录，或在底栏设置输出根目录。');
+    for (const { job, rule } of targets) if (rule?.mode === 'source-children') await validateImageFolderMapping(job.snapshot.row, { checkMother: false });
     const result = [];
-    for (const job of jobs) {
-      const exportedPath = await this.exportOne(job, destination);
-      job.exportedPath = exportedPath; job.exportError = ''; result.push({ id: job.id, path: exportedPath });
+    const batchOnly=targets.every(({job})=>job.snapshot?.feature==='batch-replace');
+    for (const { job, rule, root } of targets) {
+      const revision=job.snapshot?.feature==='batch-replace' ? job.snapshot.replacement?.revision : null;
+      try {
+        const exportedPath = await this.exportOne(job, root, rule, revision?.path);
+        if(revision) revision.exportedPath=exportedPath;
+        job.exportedPath = exportedPath; job.exportError = ''; result.push({ id: job.id, path: exportedPath });
+      } catch(error) {
+        if(!batchOnly) throw error;
+        job.exportError=error.message; result.push({id:job.id,error:job.exportError});
+      }
+      if(batchOnly) this.persist();
     }
     this.changed(); return result;
   }
@@ -2013,3 +2111,5 @@ export class StudioService {
     this.persist(); this.closed = true; this.store.close();
   }
 }
+
+Object.assign(StudioService.prototype,batchReplaceMethods);

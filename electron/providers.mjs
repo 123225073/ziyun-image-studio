@@ -58,7 +58,7 @@ async function boundedBody(response, maxBytes, onProgress) {
   } finally { reader.releaseLock(); }
   return Buffer.concat(chunks, size);
 }
-async function request(context, route, body, { method = 'POST', binary = false, maxBytes = MAX_JSON, absolute = false, submit = false, userId, taskStatus = false, idleTimeoutMs } = {}) {
+async function request(context, route, body, { method = 'POST', binary = false, maxBytes = MAX_JSON, absolute = false, submit = false, userId, taskStatus = false, idleTimeoutMs, imageSizing = false } = {}) {
   const { provider, signal } = context;
   throwAbort(signal);
   const timeoutMs = Math.min(900000, Math.max(1000, Number(provider.timeoutMs) || 180000));
@@ -88,6 +88,12 @@ async function request(context, route, body, { method = 'POST', binary = false, 
       const message = absolute ? `文件服务器返回 HTTP ${response.status}。` : `模型服务返回 HTTP ${response.status}：${meanings[response.status] || '服务暂时不可用'}。`;
       const e = fail(message, submit && response.status >= 500 ? 'PROVIDER_UNKNOWN' : 'PROVIDER_HTTP');
       e.status = response.status; e.unknown = e.code === 'PROVIDER_UNKNOWN';
+      if (imageSizing && [400, 422].includes(response.status)) {
+        try {
+          const raw = (await boundedBody(response, 16 * 1024)).toString('utf8');
+          e.imageSizeRejection = readImageSizeRejection(raw);
+        } catch {}
+      }
       // A broken error-response stream must not obscure a definite HTTP rejection.
       try{await response.body?.cancel();}catch{}
       throw e;
@@ -161,10 +167,14 @@ async function localMedia(filename, maxBytes=30*MB) {
   return { bytes, ...sniffMedia(bytes) };
 }
 function dataUrl(media) { return `data:${media.mime};base64,${media.bytes.toString('base64')}`; }
-export function imageDimensions(media,requestedSize) {
+export function imageDimensions(media,requestedSize,submittedSize=requestedSize) {
   const {width,height}=media;
   const actualSize=width&&height?`${width}x${height}`:undefined;
-  const warning=requestedSize&&actualSize&&actualSize!==requestedSize?`服务返回 ${actualSize}，与请求 ${requestedSize} 不同；已保留结果，请复核规格。`:requestedSize&&!actualSize?'当前图片格式无法核实像素尺寸；请复核实际输出规格。':'';
+  const adjusted = submittedSize !== requestedSize ? `服务不接受 ${requestedSize}，已自动改用${submittedSize === 'auto' ? '服务自动尺寸' : submittedSize}。` : '';
+  const mismatch = submittedSize && submittedSize !== 'auto' && actualSize && actualSize !== submittedSize
+    ? `服务返回 ${actualSize}，与请求 ${submittedSize} 不同；已保留结果，请复核规格。`
+    : requestedSize && !actualSize ? '当前图片格式无法核实像素尺寸；请复核实际输出规格。' : '';
+  const warning = [adjusted, mismatch].filter(Boolean).join(' ');
   return {requestedSize,width,height,actualSize,warning};
 }
 function prompt(payload) { const text=String(payload.prompt || '').trim(); if(!text) throw fail('请填写提示词或文案。'); return text; }
@@ -194,14 +204,14 @@ function imageSize(payload, provider, media) {
   const resolution=payload.resolution || '1K'; const index=['1K','2K','4K'].indexOf(resolution);
   if(index<0) throw fail('图片清晰度仅支持 1K、2K、4K。');
   const ratio=payload.ratio || 'source';
-  // CPA also lists the unqualified 2.5 alias. Keep the user's model ID on the wire.
-  if (/(?:^|\/)gpt-image-2\.5(?:$|-)/i.test(provider.model)) {
+  // Use aligned dimensions for both families without changing the model ID.
+  if (/(?:^|\/)gpt-image-2\.[56](?:$|-)/i.test(provider.model)) {
     const [width, height] = ratio === 'source'
-      ? (media ? [media.width, media.height] : [1,1])
+      ? (media?.width > 0 && media?.height > 0 ? [media.width, media.height] : [1,1])
       : ratio.split(':').map(Number);
     const aspect = Math.max(width, height) / Math.min(width, height);
-    if (!Number.isFinite(aspect) || aspect > 3 || width <= 0 || height <= 0) {
-      throw fail('GPT Image 2.5 需要有效参考尺寸，长宽比范围为 1:3 至 3:1。');
+    if (!Number.isFinite(aspect) || width <= 0 || height <= 0) {
+      throw fail('请选择有效的图片比例。');
     }
     const target = [aspect===1?1024:1536, 2048, 3840][index];
     const candidates = [];
@@ -215,31 +225,59 @@ function imageSize(payload, provider, media) {
     const exact = candidates.filter(size => size.error < 1e-8);
     const options = ratio !== 'source' && exact.length ? exact : candidates;
     options.sort((a,b) => (Math.abs(a.long-target) + a.error*target*2) - (Math.abs(b.long-target) + b.error*target*2));
-    const {long, edge} = options[0];
-    return width >= height ? `${long}x${edge}` : `${edge}x${long}`;
-  }
-  if(!/^gpt-image-2(?:$|-)/i.test(provider.model)) {
-    if(index!==0) throw fail('当前 OpenAI 图片模型未声明支持此清晰度，请选择 1K 或更换已确认支持的模型。');
-    const map={'1:1':'1024x1024','3:2':'1536x1024','2:3':'1024x1536'};
-    if(ratio==='source') {
-      if(!media?.width || !media?.height) throw fail('无法读取原图尺寸，请明确选择该模型支持的比例。');
-      const exact=Object.entries(map).find(([r])=>{const [w,h]=r.split(':').map(Number);return Math.abs(media.width/media.height-w/h)<0.01;});
-      if(!exact) throw fail('该模型无法保持此原图比例；请更换支持任意尺寸的模型或明确选择支持比例。');
-      return exact[1];
+    if (aspect <= 3 && options.length) {
+      const {long, edge} = options[0];
+      return width >= height ? `${long}x${edge}` : `${edge}x${long}`;
     }
-    if(!map[ratio]) throw fail('当前模型仅适配 1:1、3:2、2:3，不会静默更改所选比例。');
-    return map[ratio];
   }
   if(ratio==='source') {
-    if(!media?.width || !media?.height) throw fail('无法读取参考图尺寸；请明确选择比例。');
+    if (!(media?.width > 0 && media?.height > 0)) return imageSizes['1:1'][index];
     const scale=[1536,2048,4096][index]/Math.max(media.width,media.height);
     const w=Math.max(16,Math.round(media.width*scale/16)*16),h=Math.max(16,Math.round(media.height*scale/16)*16);
-    if(Math.max(w/h,h/w)>3) throw fail('原图长宽比超过当前模型支持范围。');
     return `${w}x${h}`;
   }
   if(!imageSizes[ratio]) throw fail('当前模型未适配所选图片比例。');
   return imageSizes[ratio][index];
 }
+function readImageSizeRejection(raw) {
+  let detail;
+  try {
+    const json = JSON.parse(raw);
+    detail = json?.error ?? json;
+  } catch {
+    detail = raw;
+  }
+  const message = typeof detail === 'string' ? detail : String(detail?.message ?? '');
+  const parameter = String(detail?.param ?? '');
+  const code = String(detail?.code ?? '').toLowerCase();
+  const sizeField = /^(?:size|image_size|aspect_ratio|resolution|width|height)$/i.test(parameter);
+  const sizeCode = /^(?:(?:invalid|unsupported)_(?:image_)?(?:size|resolution|aspect_ratio)|(?:size|resolution|aspect_ratio)_(?:not_supported|invalid))$/.test(code);
+  const mention = /(?:['"`]size['"`]|\b(?:output|requested|unsupported|invalid) size\b|\b(?:size|resolution)\s+(?:must|is invalid|is not supported|not supported|should|only)|\bnot support (?:the )?(?:size|resolution)\b|\baspect ratio\b|输出尺寸|图片尺寸|分辨率|长宽比|宽高比)/i.test(message);
+  const validation = /invalid|unsupported|not support|must|only|one of|allowed|too (?:large|small)|不支持|无效|仅支持|必须|超出/i.test(message);
+  const input = /(?:reference|input|uploaded) (?:images?|files?)|参考图|上传的图片/i.test(message);
+  const omit = sizeField && /^(?:unsupported|unknown|unrecognized)_parameter$/.test(code)
+    || !parameter && /(?:unknown|unrecognized|unexpected|unsupported) (?:field|parameter|argument)\s*[:=]?\s*['"`]?(?:size|image_size)\b/i.test(message);
+  if (!omit && !sizeCode && !(sizeField && (validation || code === 'invalid_value')) && !(!parameter && !input && mention && validation)) return null;
+
+  const options = message.match(/(?:supported (?:sizes|values|resolutions)|one of|only supports?|allowed (?:sizes|values)|仅支持|可选尺寸|支持的尺寸)\s*[:：]?([^\n]+)/i)?.[1] || '';
+  const sizes = Array.from(options.matchAll(/\b([1-9]\d{1,4})\s*[x×]\s*([1-9]\d{1,4})\b/gi), ([,w,h]) => `${w}x${h}`);
+  return { omit, sizes };
+}
+
+function compatibleImageSizes(requestedSize, advertised, lowerResolutions) {
+  const [width, height] = requestedSize.split('x').map(Number);
+  const distance = size => {
+    const [w,h] = size.split('x').map(Number);
+    return Math.abs(Math.log((w / h) / (width / height)))
+      + 0.15 * Math.abs(Math.log((w * h) / (width * height)));
+  };
+  const defaults = [...lowerResolutions, '1024x1024', '1536x1024', '1024x1536'];
+  const candidates = [...new Set(advertised.length ? advertised : defaults)]
+    .filter(size => size !== requestedSize)
+    .sort((a, b) => distance(a) - distance(b));
+  return [...candidates.slice(0, 5), 'auto'];
+}
+
 async function images(payload, context) {
   let requestInput;
   try {
@@ -248,14 +286,41 @@ async function images(payload, context) {
     error.imageStage = 'local-input';
     throw error;
   }
-  const { route, body, size } = requestInput;
-  const json=await request(context,route,body,{submit:true});
-  return parseImageResponse(json, size);
+  const { route, body, size, lowerResolutions } = requestInput;
+  let candidate = size;
+  let alternatives = [];
+  for (;;) {
+    if (body instanceof FormData) {
+      if (candidate === null) body.delete('size');
+      else body.set('size', candidate);
+    } else if (candidate === null) delete body.size;
+    else body.size = candidate;
+    let json;
+    try {
+      json = await request(context, route, body, { submit: true, imageSizing: true });
+    } catch (error) {
+      const rejection = error.imageSizeRejection;
+      if (!rejection) throw error;
+      if (rejection.omit && candidate !== null) alternatives = [null];
+      else if (candidate === size) alternatives = compatibleImageSizes(size, rejection.sizes, lowerResolutions);
+      if (!alternatives.length) {
+        error.message = '服务拒绝了所选尺寸和兼容尺寸，请核对该生图接口的尺寸参数。';
+        throw error;
+      }
+      candidate = alternatives.shift();
+      continue;
+    }
+    return parseImageResponse(json, size, candidate ?? 'auto');
+  }
 }
 async function imageRequestInput(payload, context) {
   const paths=payload.referencePaths || []; if(paths.length>16) throw fail('一次图片编辑最多支持 16 张参考图。');
   const refs=[]; for(const p of paths) { throwAbort(context.signal); const m=await localMedia(p,20*MB); if(!['image/png','image/jpeg','image/webp'].includes(m.mime)) throw fail('图片编辑参考素材仅适配 PNG、JPEG、WebP，请先转换格式。'); refs.push(m); }
-  const size=imageSize(payload,context.provider,refs[0]);
+  // A combination can have a portrait layout reference and a landscape image being edited.
+  const size=imageSize(payload,context.provider,payload.editSize || refs[0]);
+  const resolutions = ['1K', '2K', '4K'];
+  const lowerResolutions = resolutions.slice(0, resolutions.indexOf(payload.resolution || '1K'))
+    .map(resolution => imageSize({ ...payload, resolution }, context.provider, refs[0]));
   const fields={model:context.provider.model,prompt:prompt(payload),n:1,size};
   if(payload.quality!==undefined) {if(!['low','medium','high','auto'].includes(payload.quality))throw fail('不支持的图片质量参数。');fields.quality=payload.quality;}
   let body=fields, route='/v1/images/generations';
@@ -264,17 +329,17 @@ async function imageRequestInput(payload, context) {
     for(const [k,v] of Object.entries(fields)) body.append(k,String(v));
     refs.forEach((m,i)=>body.append(refs.length===1?'image':'image[]',new Blob([m.bytes],{type:m.mime}),`reference-${i+1}.${m.mime.split('/')[1]}`));
   }
-  return { route, body, size };
+  return { route, body, size, lowerResolutions };
 }
-function parseImageResponse(json, size) {
+function parseImageResponse(json, size, submittedSize) {
   const result=[];
   for(const item of Array.isArray(json.data)?json.data:[]) {
     if(!item || typeof item!=='object')continue;
     if(item.b64_json) {
       if(typeof item.b64_json!=='string' || item.b64_json.length>90*MB || !/^[A-Za-z0-9+/]*={0,2}$/.test(item.b64_json)) throw uncertain('远端已响应，但图片 Base64 内容无效；请核对服务记录后再决定重新生成。');
       const bytes=Buffer.from(item.b64_json,'base64');let m;try{m=sniffMedia(bytes);}catch{throw uncertain('远端已响应，但文件内容不是有效图片；请核对服务记录后再决定重新生成。');} if(m.kind!=='image') throw uncertain('服务返回内容不是图片，请核对服务记录后再决定重新生成。');
-      result.push({bytes,mime:m.mime,...imageDimensions(m,size)});
-    } else if(item.url) {let url;try{url=safeUrl(item.url);}catch{throw uncertain('远端已响应，但图片下载地址无效；请核对服务记录后再决定重新生成。');}result.push({url,requestedSize:size});}
+      result.push({bytes,mime:m.mime,...imageDimensions(m,size,submittedSize),submittedSize});
+    } else if(item.url) {let url;try{url=safeUrl(item.url);}catch{throw uncertain('远端已响应，但图片下载地址无效；请核对服务记录后再决定重新生成。');}result.push({url,requestedSize:size,submittedSize});}
   }
   if(!result.length) {const e=fail('生图接口没有返回图片；请先核对该平台的生图/编辑能力。','PROVIDER_UNKNOWN');e.unknown=true;throw e;}
   return {images:result,remoteId:json.id,warning:result.map(m=>m.warning).filter(Boolean).join('\n')};

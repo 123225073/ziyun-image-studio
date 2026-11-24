@@ -114,7 +114,7 @@ try {
   await page.getByTestId('add-row').waitFor();
   await page.setViewportSize({ width: 1513, height: 1035 });
   await call('updateSettings', { bindings: { rewrite: '', tts: '', montageVision: '' }, autoExport: false });
-  await page.getByRole('button', { name: '03 混剪成片', exact: true }).click();
+  await page.getByRole('button', { name: '05 混剪成片', exact: true }).click();
   await page.getByRole('navigation', { name: '混剪步骤导航', exact: true }).waitFor();
   assert.deepEqual(await page.locator('[data-workflow-step]').evaluateAll(nodes => nodes.map(n => n.dataset.workflowStep)), ['1','2','3','4','5','6']);
   assert.deepEqual(await page.locator('[data-workflow-jump]').evaluateAll(nodes => nodes.map(n => n.dataset.workflowJump)), ['1','2','3','4','5','6']);

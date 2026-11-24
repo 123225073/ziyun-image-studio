@@ -7,6 +7,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import ExcelJS from 'exceljs';
 import {parseImageBatchWorkbook,writeImageBatchTemplate} from '../electron/image-batch-import.mjs';
+import {StudioService} from '../electron/service.mjs';
 import {IMAGE_BATCH_COLUMNS,normalizeImageBatchRow} from '../shared/image-batch-import.mjs';
 
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6bWQAAAAASUVORK5CYII=','base64');
@@ -31,6 +32,31 @@ test('downloaded template has an empty task sheet, separate examples and actual 
  assert.equal(workbook.getWorksheet('示例').actualRowCount,4);
  const guide=JSON.stringify(workbook.getWorksheet('说明').getSheetValues());assert.match(guide,/当前项目/);assert.match(guide,/500 行/);
  const parsed=await parseImageBatchWorkbook(file,{settings});assert.equal(parsed.rowCount,0);assert.equal(parsed.reverseCount,0);assert.deepEqual(parsed.errors,[]);
+});
+
+test('旧 Excel 显式系统目录持续覆盖分类；留空行自动使用分类目录',async t=>{
+ const {file,dir}=await fixture(t);
+ await book(file,[{code:'G01',name:'系统',outputLocation:'系统输出目录',userPrompt:'系统图'},{code:'G02',name:'分类',userPrompt:'分类图'}]);
+ const plan=await parseImageBatchWorkbook(file,{settings:{}});
+ assert.deepEqual(plan.rows.map(r=>r.outputLocation),['系统输出目录','']);
+ const dataDir=path.join(dir,'data'),globalDir=path.join(dir,'系统'),categoryDir=path.join(dir,'分类');
+ let service=await StudioService.create({dataDir});
+ try {
+ await service.importImageBatch('legacy-excel',plan.rows);
+ assert.equal(service.state.rows[0].outputMode,'system');
+ await service.saveRow({...service.state.rows[0],name:'系统-改名'});
+ await service.close();
+ service=await StudioService.create({dataDir,providerRunner:async()=>({images:[{bytes:png}]})});
+ await service.updateSettings({outputDir:globalDir,imageCategoryDirectory:{category:'G',directory:categoryDir},autoExport:true,
+   providers:[{id:'fixture',name:'fixture',protocol:'openai-images',baseUrl:'http://127.0.0.1:1',model:'fixture'}],bindings:{image:'fixture'}});
+ await service.enqueueImages(service.state.rows.map(r=>r.id));
+ const deadline=Date.now()+8000;while(!service.state.jobs.every(j=>j.exportedPath)&&Date.now()<deadline)await new Promise(r=>setTimeout(r,30));
+ const [system,category]=service.state.jobs;
+ assert.equal(path.dirname(path.dirname(system.exportedPath)),globalDir);
+ assert.equal(path.dirname(category.exportedPath),categoryDir);
+ assert.deepEqual(await fs.readFile(system.exportedPath),png);
+ assert.deepEqual(await fs.readFile(category.exportedPath),png);
+ } finally {await service.close();}
 });
 
 test('rows resolve local relative files and folders, preview defaults, increment codes and preserve manual text',async t=>{

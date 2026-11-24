@@ -533,3 +533,18 @@
  .timeline-player { grid-column: 1/-1; grid-row: 1; }
 }
 
+/* Five workflow steps share the title bar with the existing utility actions. */
+.main-nav .workflow-nav {gap:4px}
+.main-nav .workflow-nav .step-arrow {width:13px;margin:0 2px}
+.main-nav .workflow-nav button {gap:7px;padding:0 6px;font-size:15px}
+.main-nav .utility-nav {margin-left:0}
+.main-nav .utility-nav button {padding-inline:12px;font-size:15px}
+@media(max-width:1200px) {
+ .main-nav .workflow-nav .step-arrow {display:none}
+ .main-nav .workflow-nav button {font-size:14px}
+ .main-nav .utility-nav button {padding-inline:9px;font-size:14px}
+}
+@media(max-width:1200px) {
+ .main-nav .workflow-nav button {gap:4px;padding-inline:3px}
+ .main-nav .workflow-nav button svg {width:18px;height:18px}
+}

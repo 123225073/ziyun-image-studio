@@ -68,7 +68,7 @@ async function launch() {
   page.on('pageerror', error => errors.push(error.message));
   await page.getByTestId('add-row').waitFor();
   await page.setViewportSize({ width: 1513, height: 1035 });
-  await page.getByRole('button', { name: '03 混剪成片', exact: true }).click();
+  await page.getByRole('button', { name: '05 混剪成片', exact: true }).click();
 }
 async function close() {
   if (!application) return;

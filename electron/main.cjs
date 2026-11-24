@@ -93,7 +93,9 @@ async function removeProvider(id){
  });
 }
 const selectedPaths=new Set();
-async function allowedPaths(){const s=await service.getState();const sectionMedia=sections=>(Array.isArray(sections)?sections:Object.values(sections||{})).flatMap(seg=>[...(seg.paths||[]),seg.audioPath,...(seg.shots||[]).map(shot=>shot.path)]).filter(Boolean);const files=[...selectedPaths,...(s.montageBindingLibrary?.folders||[]).flatMap(folder=>folder.paths||[]),...(s.montageDrafts||[]).flatMap(d=>[d.config?.openingPath,d.config?.masterAudioPath,...(d.timeline?.clips||[]).map(c=>c.path)]),...(s.montageSetup?.sections||[]).flatMap(section=>section.paths||[]),s.montageSetup?.masterAudioPath,s.montageSetup?.openingPath,...s.assets.map(a=>a.path),...(s.montageAssets||[]).flatMap(a=>[a.path,...(a.shots||[]).map(shot=>shot.thumbnailPath)]),...s.rows.flatMap(r=>r.sourcePaths||[]),...s.jobs.flatMap(j=>[j.localPath,...(j.referencePaths||[]),j.snapshot?.config?.openingPath,j.snapshot?.config?.masterAudioPath,...sectionMedia(j.snapshot?.config?.segments),...(j.timeline?.clips||[]).map(c=>c.path),...(j.snapshot?.config?.timeline?.clips||[]).map(c=>c.path)]),...s.formulas.flatMap(f=>[f.openingPath,f.masterAudioPath,...sectionMedia(f.sections)])].filter(Boolean);return new Set(files.map(p=>path.resolve(p).toLowerCase()));}
+let templateInputPaths,batchReplacePaths,batchReviewPaths;
+const mediaPathKey=file=>process.platform==='win32'?path.resolve(file).toLowerCase():path.resolve(file);
+async function allowedPaths(){const s=service.state;const sectionMedia=sections=>(Array.isArray(sections)?sections:Object.values(sections||{})).flatMap(seg=>[...(seg.paths||[]),seg.audioPath,...(seg.shots||[]).map(shot=>shot.path)]).filter(Boolean);const files=[...selectedPaths,...templateInputPaths(s.templateDraft),...templateInputPaths(s.templateCombinationDraft),...batchReplacePaths(s.batchReplaceDraft),...batchReviewPaths(s),...(s.montageBindingLibrary?.folders||[]).flatMap(folder=>folder.paths||[]),...(s.montageDrafts||[]).flatMap(d=>[d.config?.openingPath,d.config?.masterAudioPath,...(d.timeline?.clips||[]).map(c=>c.path)]),...(s.montageSetup?.sections||[]).flatMap(section=>section.paths||[]),s.montageSetup?.masterAudioPath,s.montageSetup?.openingPath,...s.assets.map(a=>a.path),...(s.montageAssets||[]).flatMap(a=>[a.path,...(a.shots||[]).map(shot=>shot.thumbnailPath)]),...s.rows.flatMap(r=>r.sourcePaths||[]),...s.jobs.flatMap(j=>[j.localPath,...(j.referencePaths||[]),j.snapshot?.config?.openingPath,j.snapshot?.config?.masterAudioPath,...sectionMedia(j.snapshot?.config?.segments),...(j.timeline?.clips||[]).map(c=>c.path),...(j.snapshot?.config?.timeline?.clips||[]).map(c=>c.path)]),...s.formulas.flatMap(f=>[f.openingPath,f.masterAudioPath,...sectionMedia(f.sections)])].filter(Boolean);return new Set(files.map(mediaPathKey));}
 function checkSender(event){if(!win||event.sender.id!==win.webContents.id||event.senderFrame!==win.webContents.mainFrame)throw new Error('此窗口没有操作权限。');}
 function mediaHeaders(file){const ext=path.extname(file).toLowerCase();return {'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp','.mp4':'video/mp4','.mov':'video/quicktime','.webm':'video/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.aac':'audio/aac','.ogg':'audio/ogg'}[ext];}
 async function setup(){
@@ -102,6 +104,8 @@ async function setup(){
  const {openCredentialVault}=await import('./credential-vault.mjs');
  const vaultFile=path.join(dataDir,process.platform==='darwin'?'credentials.keychain.json':'credentials.dpapi.json');
  vault=await openCredentialVault({file:vaultFile,safeStorage});
+ ({templateInputPaths}=await import('../shared/template-edit.mjs'));
+ ({batchReplacePaths,batchReviewPaths}=await import('./batch-replace.mjs'));
  const {StudioService}=await import('./service.mjs');const {runProvider,sniffMedia,readOairegboxDashboard}=await import('./providers.mjs');const {renderMontage,readMontageTimeline,prepareMontageTimeline,mediaDuration,resolveFfmpeg,runMedia}=await import('./render.mjs');
  const {scanMontageFolder}=await import('./montage-library.mjs');
  const {TTS_PROTOCOLS}=await import('../shared/speech.mjs');
@@ -132,7 +136,7 @@ async function setup(){
   const state=await service.getState();return key==='output'?state.settings.outputDir:key==='jianying'?state.settings.jianyingDraftRoot:key==='excel-template'?app.getPath('downloads'):undefined;
  }});
  protocol.handle('studio-media',async request=>{
-  try{const url=new URL(request.url);const file=path.resolve(url.searchParams.get('path')||'');if(!(await allowedPaths()).has(file.toLowerCase())||!mediaHeaders(file))return new Response('Denied',{status:403});const stat=await fsp.stat(file);if(!stat.isFile())return new Response('Missing',{status:404});const handle=await fsp.open(file,'r');const bytes=Buffer.alloc(32);await handle.read(bytes,0,32,0);await handle.close();if(!sniffMedia(bytes))return new Response('Invalid media',{status:415});
+  try{const url=new URL(request.url);const file=path.resolve(url.searchParams.get('path')||'');if(!(await allowedPaths()).has(mediaPathKey(file))||!mediaHeaders(file))return new Response('Denied',{status:403});const stat=await fsp.stat(file);if(!stat.isFile())return new Response('Missing',{status:404});const handle=await fsp.open(file,'r');const bytes=Buffer.alloc(32);await handle.read(bytes,0,32,0);await handle.close();if(!sniffMedia(bytes))return new Response('Invalid media',{status:415});
    const range=request.headers.get('range');let start=0,end=stat.size-1,status=200;const headers={'Content-Type':mediaHeaders(file),'Accept-Ranges':'bytes','Cache-Control':'no-store'};
    if(range){const match=/^bytes=(\d*)-(\d*)$/.exec(range);if(!match)return new Response('',{status:416});if(match[1]){start=Number(match[1]);if(match[2])end=Math.min(end,Number(match[2]));}else{start=Math.max(0,stat.size-Number(match[2]));}if(start>end||start>=stat.size)return new Response('',{status:416,headers:{'Content-Range':`bytes */${stat.size}`}});status=206;headers['Content-Range']=`bytes ${start}-${end}/${stat.size}`;}
    headers['Content-Length']=String(end-start+1);return new Response(Readable.toWeb(fs.createReadStream(file,{start,end})),{status,headers});
@@ -143,6 +147,23 @@ async function setup(){
  }
  const methods=new Set(['getState','reorderRows','saveRowCode','saveMontageSetup','createMontageDraft','reviewMontageCombinations','suggestMontageCombination','acceptMontageSuggestion','resolveMontageBindings','updateSettings','saveRow','deleteRow','deleteRows','importFiles','scanFolder','enqueueImages','enqueueVideo','enqueueMontage','enqueueSpeech','planMontage','editMontageShot','retryJobs','selectJobs','setPaused','exportJobs','saveFormula','describe','rewritePrompt','deleteFailedImages','archiveImages','saveTimeline','openTimeline','enqueueTimeline']);
  ipcMain.handle('studio:call',async(event,method,...args)=>{try{checkSender(event);if(method==='appInfo')return {ok:true,value:{version:appVersion,platform:process.platform,arch:process.arch}};
+   if(method==='pasteBatchTemplate'){
+    let bytes;
+    if(args.length){
+     if(!(args[0] instanceof Uint8Array)||!args[0].length||args[0].length>20*1024*1024)throw new Error('每张粘贴模板最多 20 MB。');
+     bytes=Buffer.from(args[0]);
+    }else{
+     const image=require('electron').clipboard.readImage();
+     if(image.isEmpty())throw new Error('剪贴板里没有图片。请先复制图片或截图，再粘贴。');
+     bytes=image.toPNG();
+    }
+    const directory=path.join(dataDir,'batch-template-inputs');
+    const {snapshotStudioReference}=await import('./template-studio.mjs');
+    await fsp.mkdir(directory,{recursive:true});
+    const saved=await snapshotStudioReference(directory,bytes);
+    selectedPaths.add(saved.original);
+    return {ok:true,value:saved.original};
+   }
    if(method==='checkAppRelease')return {ok:true,value:await checkAppRelease(appVersion,(url,options)=>net.fetch(url,options),globalThis.fetch)};
    if(method==='openAppReleases'){await shell.openExternal(releasePage);return {ok:true};}
    if(method==='saveProvider')return {ok:true,value:await saveProvider(args[0])};if(method==='deleteProvider'){await removeProvider(args[0]);return {ok:true};}if(method==='fetchProviderModels'){
@@ -178,9 +199,61 @@ async function setup(){
     await shell.openExternal(OAIREGBOX_CONSOLE+route);
     return {ok:true};
    }if(method==='testProvider'||method==='models'){const s=await service.getState();const p=s.settings.providers.find(p=>p.id===(typeof args[0]==='string'?args[0]:args[0]?.id));if(!p)throw new Error('请先保存连接。');const result=await providerRunner('models',{}, {provider:p});return {ok:true,value:{ok:true,message:TTS_PROTOCOLS.includes(p.protocol)?'语音配置已校验，型号来自官方目录。账号权限请通过生成试听验证。':`已连接，返回${result.models?.length||0}个模型。此检查不代表所有生成能力通过。`,models:result.models,detail:result.text}};}
-   if(method==='chooseImageOutputFolder'){
-    const input=await pickers.open('image-output',{title:'选择类型目录（结果保存到其中的子图）',properties:['openDirectory']});
+   if(method==='analyzeCoverLayout'){
+    if(typeof args[0]!=='string'||!(await allowedPaths()).has(mediaPathKey(args[0])))throw new Error('请先选择固定模板图片。');
+    return {ok:true,value:await service.analyzeCoverLayout(...args)};
+   }
+   if(method==='saveBatchPreviewPrompt')return {ok:true,value:await service.saveBatchPreviewPrompt(...args)};
+   if(method==='setTemplateResultVisibility')return {ok:true,value:await service.setTemplateResultVisibility(...args)};
+   if(method==='applyBatchEdit'){
+    if(typeof args[0]?.path!=='string'||!(await allowedPaths()).has(mediaPathKey(args[0].path)))throw new Error('请使用当前项目中已登记的调试结果图。');
+    return {ok:true,value:await service.applyBatchEdit(args[0])};
+   }
+   if(method==='exportBatchRevision'){
+    if(!selectedPaths.has(args[1]))throw new Error('请选择本次修订成品的导出目录。');
+    return {ok:true,value:await service.exportBatchRevision(...args)};
+   }
+   if (['enqueueTemplateEdit','saveTemplateDraft','saveBatchReplaceDraft','previewBatchReplace','enqueueBatchReplace'].includes(method)) {
+    const allowed=await allowedPaths();
+    const paths=method==='enqueueTemplateEdit'||method==='saveTemplateDraft'?templateInputPaths(args[0]):batchReplacePaths(args[0]);
+    for(const file of paths) if(!allowed.has(mediaPathKey(file)))throw new Error('请先在工作台选择要使用的图片。');
+    return {ok:true,value:await service[method](...args)};
+   }
+   if(method==='updateSettings'&&args[0]?.imageCategoryDirectory?.directory&&!selectedPaths.has(args[0].imageCategoryDirectory.directory))throw new Error('请使用文件夹选择器设置分类目录。');
+   if(method==='templateOutputDirectory'){
+    let directory='';
+    if(args[0]!=='clear'){
+     const picked=await pickers.open('template-output',{title:'选择调试图片输出目录',properties:['openDirectory','createDirectory']});
+     if(picked.canceled||!picked.filePaths.length)return {ok:true,value:null};
+     directory=picked.filePaths[0];
+    }
+    service.assertOpen();service.state.settings.templateOutputDir=directory;service.changed();
+    return {ok:true,value:directory};
+   }
+   if(method==='downloadTemplateResult'){
+    const job=service.state.jobs.find(item=>item.id===args[0]);
+    if(job?.snapshot?.feature!=='template-edit'||job.status!=='succeeded')throw new Error('此调试任务还没有可下载的图片。');
+    let directory=service.state.settings.templateOutputDir;
+    if(!directory){
+     const picked=await pickers.open('template-download',{title:'选择这张调试图的下载目录',properties:['openDirectory','createDirectory']});
+     if(picked.canceled||!picked.filePaths.length)return {ok:true,value:null};
+     directory=picked.filePaths[0];
+    }
+    const exported=await service.exportOne(job,directory,{mode:'direct'});
+    job.exportedPath=exported;job.exportError='';service.changed();return {ok:true,value:exported};
+   }
+   if(method==='recoverImageExport'){
+    const input=await pickers.open('output',{title:'选择这张图片的另存目录',properties:['openDirectory','createDirectory']});
     if(input.canceled||!input.filePaths.length)return {ok:true,value:null};
+    return {ok:true,value:await service.recoverImageExport(args[0],input.filePaths[0])};
+   }
+   if(method==='chooseImageOutputFolder'){
+    const input=await pickers.open('image-output',{title:'选择本行保存目录',properties:['openDirectory','createDirectory']});
+    if(input.canceled||!input.filePaths.length)return {ok:true,value:null};
+    const directory=input.filePaths[0];
+    if(path.basename(directory)!=='子图'){
+     selectedPaths.add(directory);return {ok:true,value:{directory}};
+    }
     const {inspectImageOutputFolder}=await import('./image-folder-import.mjs');
     const mapping=await inspectImageOutputFolder(input.filePaths[0]);
     const outputMappingToken=randomUUID();imageOutputSelections.set(outputMappingToken,mapping);
@@ -189,6 +262,7 @@ async function setup(){
    }
    if(method==='saveRow'){
     const input={...args[0]};const token=input.outputMappingToken;delete input.outputMappingToken;
+    if(input.rowOutputDir && input.rowOutputDir!==service.state.rows.find(row=>row.id===input.id)?.rowOutputDir && !selectedPaths.has(input.rowOutputDir))throw new Error('请使用文件夹选择器指定本行目录。');
     let mapping;
     if(token&&!input.clearOutputMapping){
      const expected=imageOutputSelections.get(token);if(!expected)throw new Error('保存位置选择已失效，请重新选择目录。');
@@ -283,7 +357,7 @@ async function setup(){
     const allowed=await allowedPaths();
     const config=args[0]||{};
     const files=[config.masterAudioPath,config.openingPath,...(config.segments||[]).flatMap(segment=>[segment.audioPath,...(segment.paths||[]),...(segment.shots||[]).map(shot=>shot.path)])].filter(Boolean);
-    if(files.some(file=>!allowed.has(path.resolve(file).toLowerCase())))throw new Error('请先导入混剪素材和配音。');
+    if(files.some(file=>!allowed.has(mediaPathKey(file))))throw new Error('请先导入混剪素材和配音。');
    }
    if(method==='openTimeline'){
     const record=await service.openTimeline(args[0]);
@@ -294,7 +368,7 @@ async function setup(){
    }
    if(method==='timelineMediaDuration'){
     const file=path.resolve(args[0]);
-    if(!(await allowedPaths()).has(file.toLowerCase()))throw new Error('请先导入素材。');
+    if(!(await allowedPaths()).has(mediaPathKey(file)))throw new Error('请先导入素材。');
     return {ok:true,value:await mediaDuration(ffmpegPath,file)};
    }
    if(method==='saveTimeline'||method==='enqueueTimeline'||method==='exportJianying'){
@@ -325,8 +399,8 @@ async function setup(){
  ipcMain.handle('studio:files',async(event,kind)=>{
   checkSender(event);
   const images=['png','jpg','jpeg','webp','gif','bmp'];
-  const extensions=kind==='h3-reference'?[...images,'mp4','mov','mp3','wav']:kind==='video'?['mp4','mov','webm']:kind==='media'?[...images,'mp4','mov','webm']:kind==='audio'?['mp3','wav','m4a','aac','ogg']:images;
-  const result=await pickers.open(['image','video','media','audio','h3-reference'].includes(kind)?kind:'image',{title:'选择素材文件',properties:['openFile','multiSelections'],filters:[{name:'素材文件',extensions}]});
+  const extensions=kind==='cover-image'||kind==='cover-template'?['png','jpg','jpeg','webp']:kind==='h3-reference'?[...images,'mp4','mov','mp3','wav']:kind==='video'?['mp4','mov','webm']:kind==='media'?[...images,'mp4','mov','webm']:kind==='audio'?['mp3','wav','m4a','aac','ogg']:images;
+  const result=await pickers.open(['image','video','media','audio','h3-reference'].includes(kind)?kind:'image',{title:'选择素材文件',properties:kind==='cover-template'?['openFile']:['openFile','multiSelections'],filters:[{name:'素材文件',extensions}]});
   if(result.canceled||!result.filePaths.length)return [];
   for(const file of result.filePaths)selectedPaths.add(file);
   return result.filePaths;
@@ -361,7 +435,7 @@ async function setup(){
   if(!await isDirectory(directory))throw new Error('输出文件夹不存在或暂不可访问。');
   if(await shell.openPath(directory))throw new Error('无法打开输出文件夹。');
  });
- ipcMain.handle('studio:reveal',async(event,file)=>{checkSender(event);if(!file||!(await allowedPaths()).has(path.resolve(file).toLowerCase()))throw new Error('只允许打开项目中已登记的素材。');shell.showItemInFolder(path.resolve(file));});
+ ipcMain.handle('studio:reveal',async(event,file)=>{checkSender(event);if(!file||!(await allowedPaths()).has(mediaPathKey(file)))throw new Error('只允许打开项目中已登记的素材。');shell.showItemInFolder(path.resolve(file));});
  ipcMain.handle('studio:window',(event,action)=>{checkSender(event);if(action==='minimize')win.minimize();else if(action==='maximize')win.isMaximized()?win.unmaximize():win.maximize();else if(action==='close')win.close();});
  win=new BrowserWindow({width:1513,height:1035,minWidth:1050,minHeight:680,title:appTitle,backgroundColor:'#fafbfa',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:!app.isPackaged||process.env.ZIYUN_SMOKE==='1'}});
  win.on('page-title-updated',event=>event.preventDefault());
@@ -369,12 +443,22 @@ async function setup(){
  win.once('ready-to-show',()=>win.show());const dev=process.env.ZIYUN_DEV_URL;if(dev){const u=new URL(dev);if(u.hostname!=='127.0.0.1')throw new Error('开发服务器仅允许本机地址。');await win.loadURL(dev);}else await win.loadFile(path.join(root,'dist','index.html'));
  win.on('close',event=>{if(!quitting){event.preventDefault();quitSafely();}});
 }
+let closingRequest=false;
 async function quitSafely(){
- if(quitting)return;
+ if(quitting||closingRequest)return;
+ closingRequest=true;
+ try{await finishClose()}finally{closingRequest=false}
+}
+async function finishClose(){
+ if(win&&!win.isDestroyed()&&!win.webContents.isDestroyed()&&!win.webContents.isCrashed()){
+  try{await win.webContents.executeJavaScript('window.flushImageWorkspaceDrafts?.()')}
+  catch{await dialog.showMessageBox(win,{type:'warning',message:'模板或混批草稿暂未保存，请返回工作区重试保存后退出。'});return}
+ }
  const state=await service.getState();
  const active=state.jobs.filter(job=>['running','planning','saving','queued'].includes(job.status));
  if(service.imageImportTasks?.size||service.imageDescribeTasks?.size){if(win&&!win.isDestroyed())await dialog.showMessageBox(win,{type:'info',message:'正在导入或反推图片任务，请等待当前批次完成后再退出。'});return;}
  if(service.preparingDraft){if(win&&!win.isDestroyed())await dialog.showMessageBox(win,{type:'info',message:'正在准备混剪草稿，请先停止后续任务，等待当前配音和素材处理完成后再退出。'});return;}
+ if(service.coverLayoutTask){if(win&&!win.isDestroyed())await dialog.showMessageBox(win,{type:'info',message:'固定模板正在识别版式，完成后即可退出。'});return;}
  if(service.reviewTasks?.size){if(win&&!win.isDestroyed())await dialog.showMessageBox(win,{type:'info',message:'正在处理 AI 文案校对，请先停止后续操作，等待当前请求完成后再退出。'});return;}
  if((active.length||unsaved)&&win&&!win.isDestroyed()){
   const result=await dialog.showMessageBox(win,{

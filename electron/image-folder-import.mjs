@@ -46,7 +46,7 @@ export async function validateImageFolderMapping(row, { createOutput = false } =
 }
 
 function folderIdentity(folderName) {
-  const match = folderName.match(/^([a-z]+\d+)(?:[\s._\-—–]+(.*))?$/i);
+  const match = folderName.normalize('NFKC').match(/^(\p{L}[\p{L}\p{M}]*[\s._\-—–]*\d+)(?:[\s._\-—–]+(.*))?$/u);
   return match ? { code: match[1].toUpperCase(), name: match[2]?.trim() || folderName } : { code: '', name: folderName };
 }
 
