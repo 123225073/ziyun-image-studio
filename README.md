@@ -6,13 +6,13 @@ Windows 和 macOS 本地图片与视频批量生产工具。工作空间、任�
 
 0.8.0 支持按实际分类设置导出目录、模板选区编辑、按位置批量导入素材，以及连续预览新的替换组合。每个组合可以查看完整的生图提示词。[更新内容](.github/release-notes-v0.8.0.md)
 
-点击下方发布页，在「Assets」中按电脑类型选择安装包。Mac 老用户覆盖安装即可沿用原工作区。[Mac 更新、备份与回退说明](docs/Mac更新与数据保留.md)
+按电脑类型点击下表即可下载 0.8.0。Mac 老用户覆盖安装即可沿用原工作区。[Mac 更新、备份与回退说明](docs/Mac更新与数据保留.md)
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 64 位 | [Windows 安装包（Setup 开头的 EXE）](https://github.com/123225073/ziyun-image-studio/releases/latest) |
-| Mac，Apple 芯片（M 系列） | [Apple 芯片安装包（mac-arm64.dmg）](https://github.com/123225073/ziyun-image-studio/releases/latest) |
-| Mac，Intel 芯片 | [Intel 芯片安装包（mac-x64.dmg）](https://github.com/123225073/ziyun-image-studio/releases/latest) |
+| Windows 64 位 | [Windows 安装包（EXE）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.8.0/ZiyunStudio-Setup-0.8.0.exe) |
+| Mac，Apple 芯片（M 系列） | [Apple 芯片安装包（mac-arm64.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.8.0/ZiyunStudio-0.8.0-mac-arm64.dmg) |
+| Mac，Intel 芯片 | [Intel 芯片安装包（mac-x64.dmg）](https://github.com/123225073/ziyun-image-studio/releases/download/v0.8.0/ZiyunStudio-0.8.0-mac-x64.dmg) |
 
 [统一发布页](https://github.com/123225073/ziyun-image-studio/releases/latest) · [SHA-256 校验文件](https://github.com/123225073/ziyun-image-studio/releases/latest/download/SHA256SUMS.txt)
 
@@ -56,7 +56,7 @@ Excel 和文件夹导入都可以在预览中多选。错误行单独标记，�
 
 详细用法见 [0.5.0 操作说明](docs/0.5.0-文字素材绑定与目录配置.md)。旧版操作记录见 [0.4.1 说明](docs/0.4.1-批量导入与文案校对.md)。
 
-本版 181 项单元与服务测试通过；Windows 本地及三平台安装版功能验收通过，包含图片导入、路径记忆、文案校对、文字绑定、时间线与导出。模型请求使用模拟服务，真实付费模型效果尚未验收。
+0.5.x 阶段的 181 项单元与服务测试通过；Windows 本地及三平台安装版功能验收通过，包含图片导入、路径记忆、文案校对、文字绑定、时间线与导出。模型请求使用模拟服务，真实付费模型效果尚未验收。
 
 ## 安装与使用
 
