@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -104,21 +104,64 @@ function stopFixtureChildren() {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
 }
+const scratchKeychain = path.join(fixture,'upgrade-test.keychain-db');
+const scratchPassword = randomBytes(32).toString('hex');
+let previousDefault, previousSearch, madeKeychain = false;
+function security(command, ...args) {
+  // Never include arguments, command output or fixture passwords in errors.
+  const result = spawnSync('/usr/bin/security',[command,...args],{encoding:'utf8',timeout:10000});
+  if (result.status !== 0) throw new Error('Keychain tool failed: '+command+' (status '+result.status+')');
+  return result.stdout;
+}
+function keychainPaths(value) {
+  const lines = value.split('\n').map(line => line.trim()).filter(Boolean);
+  return lines.map(line => {
+    assert.match(line,/^"\/[^"]+"$/);
+    return line.slice(1,-1);
+  });
+}
+function signingPartition(executable) {
+  const details = spawnSync('/usr/bin/codesign',['-d','--verbose=4',executable],{encoding:'utf8',timeout:5000});
+  assert.equal(details.status,0);
+  assert.match(details.stderr,/^Signature=adhoc$/m);
+  const hash = details.stderr.match(/^CDHash=([a-fA-F0-9]{40})$/m)?.[1];
+  assert.ok(hash,'Expected an ad-hoc CodeDirectory hash');
+  return 'cdhash:'+hash.toLowerCase();
+}
+function prepareKeychain() {
+  [previousDefault] = keychainPaths(security('default-keychain','-d','user'));
+  previousSearch = keychainPaths(security('list-keychains','-d','user'));
+  assert.ok(previousDefault && previousSearch.length);
+  const partitions = [...new Set([executablePath,process.env.ZIYUN_TEST_EXE].map(signingPartition))];
+  security('create-keychain','-p',scratchPassword,scratchKeychain);
+  madeKeychain = true;
+  security('unlock-keychain','-p',scratchPassword,scratchKeychain);
+  security('default-keychain','-d','user','-s',scratchKeychain);
+  security('list-keychains','-d','user','-s',scratchKeychain);
+  assert.deepEqual(keychainPaths(security('list-keychains','-d','user')),[scratchKeychain]);
+  const item = ['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
+  security('add-generic-password',...item,'-w',randomBytes(24).toString('base64'),
+    '-T',executablePath,'-T',process.env.ZIYUN_TEST_EXE,scratchKeychain);
+  security('set-generic-password-partition-list',...item,'-S',partitions.join(','),'-k',scratchPassword,scratchKeychain);
+}
+function restoreKeychain() {
+  if (!madeKeychain) return;
+  try { security('default-keychain','-d','user','-s',previousDefault); }
+  finally { security('list-keychains','-d','user','-s',...previousSearch); }
+  security('delete-keychain',scratchKeychain);
+  assert.deepEqual(keychainPaths(security('default-keychain','-d','user')),[previousDefault]);
+  assert.deepEqual(keychainPaths(security('list-keychains','-d','user')),previousSearch);
+}
 try {
   await stage('install verified old bundle',() => execFileSync('ditto', [oldBundle,bundle],{timeout:60000}),65000);
   // The two ad-hoc builds have distinct signatures. Grant only these binaries
   // access to a synthetic Safe Storage item on this disposable runner, as a
   // user can approve both versions in the macOS Keychain prompt.
-  await stage('prepare test-only Keychain access for both installed versions',() => {
-    const item=['-s',pkg.productName+' Safe Storage','-a',pkg.productName];
-    try {
-      execFileSync('security',['find-generic-password',...item],{stdio:'ignore',timeout:5000});
-      throw new Error('A Safe Storage item already exists; refusing to modify it.');
-    } catch (error) { if (error.status !== 44) throw error; }
-    execFileSync('security',['add-generic-password',...item,'-w',randomBytes(24).toString('base64'),
-      '-T',executablePath,'-T',process.env.ZIYUN_TEST_EXE],{stdio:'ignore',timeout:10000});
-  });
+  await stage('prepare disposable Keychain with both verified code signatures',prepareKeychain);
   await stage('open old application and verify default profile',() => launch(process.env.PREVIOUS_VERSION),75000);
+  await stage('old native Keychain availability',async () => {
+    assert.equal(await app.evaluate(({safeStorage}) => safeStorage.isAsyncEncryptionAvailable()),true);
+  });
   image = Buffer.from(await stage('create fixture image',() => page.evaluate(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 64; canvas.height = 96;
@@ -180,4 +223,5 @@ try {
   catch { stopFixtureChildren(); }
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
+  await stage('restore original runner Keychain selection',restoreKeychain);
 }
