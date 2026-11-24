@@ -208,6 +208,45 @@ jobs:
           ditto "$mounted/子云影像工坊.app" "$installed"
           codesign --verify --deep --strict "$installed"
           echo "ZIYUN_TEST_EXE=$installed/Contents/MacOS/子云影像工坊" >> "$GITHUB_ENV"
+      - name: Verify upgrade from the previous public Mac installer
+        if: ${{ !cancelled() && matrix.platform == 'mac' && env.ZIYUN_TEST_EXE != '' }}
+        timeout-minutes: 8
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREVIOUS_VERSION: ${{ inputs.previous_mac_version }}
+          MAC_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          [[ "$PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          directory=$(mktemp -d)
+          name="ZiyunStudio-$PREVIOUS_VERSION-mac-$MAC_ARCH.dmg"
+          gh release download "v$PREVIOUS_VERSION" -p "$name" -p SHA256SUMS.txt -D "$directory"
+          digest=$(awk -v name="$name" '$2 == name {print $1}' "$directory/SHA256SUMS.txt")
+          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s  %s\n' "$digest" "$directory/$name" | shasum -a 256 -c
+          mounted=$(mktemp -d)
+          hdiutil attach "$directory/$name" -readonly -nobrowse -mountpoint "$mounted"
+          trap 'hdiutil detach "$mounted"' EXIT
+          previous="$mounted/子云影像工坊.app"
+          codesign --verify --deep --strict "$previous"
+          node scripts/verify-mac-upgrade.mjs "$previous"
+      - name: One-click update from the installed Mac application
+        if: matrix.platform == 'mac' && hashFiles('scripts/verify-mac-one-click.mjs') != ''
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Package the same updater under an older, test-only version. The
+          # target is the exact release DMG, including its unmodified signature.
+          baseline="$RUNNER_TEMP/updater-test-baseline"
+          node node_modules/electron-builder/out/cli/cli.js --mac --dir --${{ matrix.arch }} --publish never \
+            --config.electronDist="$ELECTRON_DIST_ARCHIVE" --config.directories.output="$baseline" --config.extraMetadata.version=0.0.1
+          app=$(find "$baseline" -type d -name '子云影像工坊.app' -print -quit)
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          node scripts/verify-mac-one-click.mjs "$app" "release/$PACKAGE_VERSION/ZiyunStudio-$PACKAGE_VERSION-mac-${{ matrix.arch }}.dmg"
       - name: Installed application persistence
         timeout-minutes: 4
         run: node scripts/verify-installed.mjs
@@ -256,45 +295,6 @@ jobs:
       - name: Installed timeline save and export edit lock
         timeout-minutes: 4
         run: node scripts/verify-timeline-working.mjs
-      - name: Verify upgrade from the previous public Mac installer
-        if: ${{ !cancelled() && matrix.platform == 'mac' && env.ZIYUN_TEST_EXE != '' }}
-        timeout-minutes: 8
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PREVIOUS_VERSION: ${{ inputs.previous_mac_version }}
-          MAC_ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          [[ "$PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          directory=$(mktemp -d)
-          name="ZiyunStudio-$PREVIOUS_VERSION-mac-$MAC_ARCH.dmg"
-          gh release download "v$PREVIOUS_VERSION" -p "$name" -p SHA256SUMS.txt -D "$directory"
-          digest=$(awk -v name="$name" '$2 == name {print $1}' "$directory/SHA256SUMS.txt")
-          [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
-          printf '%s  %s\n' "$digest" "$directory/$name" | shasum -a 256 -c
-          mounted=$(mktemp -d)
-          hdiutil attach "$directory/$name" -readonly -nobrowse -mountpoint "$mounted"
-          trap 'hdiutil detach "$mounted"' EXIT
-          previous="$mounted/子云影像工坊.app"
-          codesign --verify --deep --strict "$previous"
-          node scripts/verify-mac-upgrade.mjs "$previous"
-      - name: One-click update from the installed Mac application
-        if: matrix.platform == 'mac' && hashFiles('scripts/verify-mac-one-click.mjs') != ''
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Package the same updater under an older, test-only version. The
-          # target is the exact release DMG, including its unmodified signature.
-          baseline="$RUNNER_TEMP/updater-test-baseline"
-          node node_modules/electron-builder/out/cli/cli.js --mac --dir --${{ matrix.arch }} --publish never \
-            --config.electronDist="$ELECTRON_DIST_ARCHIVE" --config.directories.output="$baseline" --config.extraMetadata.version=0.0.1
-          app=$(find "$baseline" -type d -name '子云影像工坊.app' -print -quit)
-          test -n "$app"
-          codesign --verify --deep --strict "$app"
-          node scripts/verify-mac-one-click.mjs "$app" "release/$PACKAGE_VERSION/ZiyunStudio-$PACKAGE_VERSION-mac-${{ matrix.arch }}.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.platform }}-${{ matrix.arch }}

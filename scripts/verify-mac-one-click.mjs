@@ -45,18 +45,56 @@ const published = [{tag_name:'v'+pkg.version,prerelease:false,draft:false,publis
 const swift = path.join(scratch,'observe.swift');
 const observe = path.join(scratch,'observe');
 await fs.writeFile(swift,`import AppKit
+import CoreGraphics
 let args = CommandLine.arguments
 let target = URL(fileURLWithPath: args[1]).standardizedFileURL
 let apps = NSWorkspace.shared.runningApplications.filter {
-  $0.bundleURL?.standardizedFileURL.path == target.path && !$0.isTerminated && $0.isFinishedLaunching
+  !$0.isTerminated
 }
 for app in apps {
+  if args.count == 3 && args[2] == "describe" {
+    if app.bundleIdentifier == "com.ziyun.imagestudio" {
+      print(app.processIdentifier, app.isFinishedLaunching, app.bundleURL?.path ?? "?", app.executableURL?.path ?? "?")
+    }
+    continue
+  }
+  guard app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path == target.resolvingSymlinksInPath().path else { continue }
   print(app.processIdentifier)
   if args.count == 3 && String(app.processIdentifier) == args[2] { _ = app.terminate() }
+}
+if args.count == 3 && args[2] == "describe",
+   let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] {
+  for window in windows {
+    let owner = window[kCGWindowOwnerName as String] as? String ?? ""
+    if ["CoreServicesUIAgent","SecurityAgent","子云影像工坊"].contains(owner) {
+      print("window",owner,window[kCGWindowName as String] ?? "(not available)")
+    }
+  }
 }
 `);
 execFileSync('/usr/bin/xcrun',['swiftc',swift,'-o',observe],{timeout:60000});
 const installedPids = () => execFileSync(observe,[bundle],{encoding:'utf8'}).trim().split(/\s+/).filter(Boolean);
+function diagnostic(command, args) {
+  try { return execFileSync(command,args,{encoding:'utf8',timeout:12000,stdio:['ignore','pipe','pipe']}).trim(); }
+  catch (error) { return [error.status,String(error.stdout || ''),String(error.stderr || '')].join(' ').trim(); }
+}
+async function diagnoseRelaunch() {
+  console.error('Installed version and inode:',(await fs.stat(bundle)).ino,diagnostic('/usr/libexec/PlistBuddy',['-c','Print :CFBundleShortVersionString',path.join(bundle,'Contents','Info.plist')]));
+  console.error('LaunchServices (pid, ready, bundle, executable):',diagnostic(observe,[bundle,'describe']));
+  console.error('Quarantine:',diagnostic('/usr/bin/xattr',['-p','com.apple.quarantine',bundle]));
+  console.error('Gatekeeper:',diagnostic('/usr/sbin/spctl',['--assess','--type','execute','--verbose=3',bundle]));
+  for (const name of await fs.readdir(applications)) {
+    if (!name.startsWith('.ziyun-app-update-')) continue;
+    const stage = path.join(applications,name);
+    const receipt = JSON.parse(await fs.readFile(path.join(stage,'receipt.json'),'utf8').catch(() => '{}'));
+    console.error('Update stage:',await fs.readdir(stage),{original:receipt.original,replacement:receipt.replacement});
+  }
+  const processes = diagnostic('/bin/ps',['-axo','pid,ppid,state,comm']);
+  console.error('Related processes:',processes.split('\n').filter(line => line.includes(pkg.productName) || /CoreServicesUIAgent|SecurityAgent|\/usr\/bin\/open$/.test(line)).join('\n'));
+  const predicate = '(process == "syspolicyd" OR process == "CoreServicesUIAgent" OR process == "lsd" OR process == "runningboardd") AND (eventMessage CONTAINS[c] "com.ziyun.imagestudio" OR eventMessage CONTAINS "子云影像")';
+  const log = diagnostic('/usr/bin/log',['show','--style','compact','--last','3m','--predicate',predicate]);
+  console.error('macOS assessment events:',log.split('\n').slice(-24).join('\n'));
+}
 let app, page;
 async function launch(version) {
   app = await electron.launch({executablePath,env,timeout:60000});
@@ -69,6 +107,7 @@ const state = () => page.evaluate(() => window.studio.call('getState'));
 try {
   await launch('0.0.1');
   const oldPid = String(app.process().pid);
+  console.log('Baseline LaunchServices registration:',diagnostic(observe,[bundle,'describe']));
   await page.locator('tr[data-row-id]').first().click();
   const quantity = page.getByRole('spinbutton',{name:'生成数量'});
   await quantity.fill('2');
@@ -121,10 +160,24 @@ try {
   app = undefined;
   assert.equal(await fs.readFile(trace,'utf8'),traceBefore+'download\n');
   let relaunched;
-  await expect.poll(() => {
-    relaunched = installedPids().find(pid => pid !== oldPid);
-    return Boolean(relaunched);
-  },{timeout:65000,message:'Expected macOS to relaunch the replaced application at its original path'}).toBe(true);
+  const began = Date.now();
+  let observed = false;
+  try {
+    await expect.poll(async () => {
+      relaunched = installedPids().find(pid => pid !== oldPid);
+      // Production acknowledges the new renderer only after its first IPC
+      // handshake. Finder's ready flag alone varies between macOS releases.
+      const stages = (await fs.readdir(applications)).filter(name => name.startsWith('.ziyun-app-update-'));
+      if (!observed && Date.now() - began > 9000) {
+        observed = true;
+        console.log('Launch in progress:',diagnostic(observe,[bundle,'describe']),'stages:',stages.length);
+      }
+      return Boolean(relaunched) && stages.length === 0;
+    },{timeout:80000,message:'Expected macOS relaunch and first-window confirmation at the original application path'}).toBe(true);
+  } catch (error) {
+    await diagnoseRelaunch();
+    throw error;
+  }
   const trustedBundle = path.resolve(process.env.ZIYUN_TEST_EXE,'../../..');
   const asar = path.join('Contents','Resources','app.asar');
   assert.equal(await sha(path.join(bundle,asar)),await sha(path.join(trustedBundle,asar)));
