@@ -373,7 +373,7 @@ async function setup(){
    }
    if(method==='saveTimeline'||method==='enqueueTimeline'||method==='exportJianying'){
     const allowed=await allowedPaths();
-    for(const clip of args[1]?.clips||[])if(clip.path&&!allowed.has(path.resolve(clip.path).toLowerCase()))throw new Error('请先导入时间轴素材。');
+    for(const clip of args[1]?.clips||[])if(clip.path&&!allowed.has(mediaPathKey(clip.path)))throw new Error('请先导入时间轴素材。');
    }
    if(method==='exportJianying'){
     const record=await service.openTimeline(args[0]);

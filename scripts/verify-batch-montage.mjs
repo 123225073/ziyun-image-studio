@@ -114,8 +114,13 @@ try{
  await editor.getByRole('button',{name:'移除片段',exact:true}).click();assert.equal(await editor.locator('.timeline-clip.music').count(),0);
  await editor.getByRole('button',{name:'撤销',exact:true}).click();assert.equal(await editor.locator('.timeline-clip.music').count(),1);
  await editor.getByRole('button',{name:'保存草稿',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.toast.error') || document.querySelector('.timeline-header small')?.textContent.includes('已保存'));
+ assert.deepEqual(await page.locator('.toast.error').allTextContents(),[],'保存时间轴草稿失败');
  await select(draftRoot);await editor.getByRole('button',{name:'选择剪映草稿目录',exact:true}).click();
- await editor.getByRole('button',{name:'导出剪映草稿',exact:true}).click();await editor.getByText(/已导出：/).waitFor({timeout:60000});
+ await editor.getByRole('button',{name:'导出剪映草稿',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.toast.error, .timeline-export-section [role="status"]'),null,{timeout:60000});
+ assert.deepEqual(await page.locator('.toast.error').allTextContents(),[],'导出剪映草稿失败');
+ assert.match(await editor.locator('.timeline-export-section [role="status"]').innerText(),/已导出：/);
  const directories=await fs.readdir(draftRoot);assert.equal(directories.length,1);
  const exportedDir=path.join(draftRoot,directories[0]);const draft=JSON.parse(await fs.readFile(path.join(exportedDir,'draft_content.json'),'utf8'));
  assert.deepEqual(draft.tracks.map(item=>item.type),['video','audio','audio','text']);

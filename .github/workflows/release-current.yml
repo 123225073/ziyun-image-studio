@@ -248,7 +248,7 @@ jobs:
         timeout-minutes: 4
         run: node scripts/verify-timeline-working.mjs
       - name: Verify upgrade from the previous public Mac installer
-        if: matrix.platform == 'mac'
+        if: ${{ !cancelled() && matrix.platform == 'mac' && env.ZIYUN_TEST_EXE != '' }}
         timeout-minutes: 8
         shell: bash
         env:
