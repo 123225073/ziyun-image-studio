@@ -13,7 +13,7 @@ import {IMAGE_BATCH_COLUMNS,normalizeImageBatchRow} from '../shared/image-batch-
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6bWQAAAAASUVORK5CYII=','base64');
 const settings={templates:[{id:'project',name:'当前项目'},{id:'other',name:'另一项目'}],defaultTemplateId:'project'};
 async function fixture(t){
- const dir=await fs.mkdtemp(path.join(os.tmpdir(),'ziyun-excel-parse-'));
+ const dir=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'ziyun-excel-parse-')));
  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
  await fs.mkdir(path.join(dir,'素材'));await fs.writeFile(path.join(dir,'素材','图1.png'),png);await fs.writeFile(path.join(dir,'素材','图2.png'),png);
  return {dir,file:path.join(dir,'tasks.xlsx')};
