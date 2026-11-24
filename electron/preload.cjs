@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('studio',{
   throw new Error(result.error);
  },
  onChange:callback=>{const listener=(_event,state)=>callback(state);ipcRenderer.on('studio:changed',listener);return()=>ipcRenderer.removeListener('studio:changed',listener);},
+ onUpdateProgress:callback=>{const listener=(_event,status)=>callback(status);ipcRenderer.on('studio:update-progress',listener);return()=>ipcRenderer.removeListener('studio:update-progress',listener);},
  chooseFiles:kind=>ipcRenderer.invoke('studio:files',kind),chooseFolder:purpose=>ipcRenderer.invoke('studio:folder',purpose),
  droppedImageHasPath:file=>Boolean(webUtils.getPathForFile(file)),
  importDroppedImages:async files=>{const paths=Array.from(files).map(file=>webUtils.getPathForFile(file));const result=await ipcRenderer.invoke('studio:reference-drop',paths);if(!result.ok)throw new Error(result.error);return result.value;},

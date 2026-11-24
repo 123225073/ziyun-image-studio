@@ -29,6 +29,15 @@ const media=path=>path&&bridge?bridge.mediaUrl(path):'';
 const basename=path=>path?.split(/[\\/]/).pop()||'';
 const slotLabel=j=>String(Number.isInteger(j.slot)?j.slot+1:1).padStart(4,"0");
 const short=(s,n=60)=>s?.length>n?s.slice(0,n)+'…':s||'';
+const defaultVideoForm={mode:'text',prompt:'',referencePaths:[],duration:5,ratio:'9:16',resolution:'768P',count:1,model:''};
+function videoFormForUpdate(value){
+ const form={...defaultVideoForm};
+ for(const [key,initial] of Object.entries(defaultVideoForm)){
+  if(key==='referencePaths')form[key]=Array.isArray(value[key])?value[key].filter(file=>typeof file==='string'):[];
+  else if(typeof value[key]===typeof initial)form[key]=value[key];
+ }
+ return form;
+}
 const imageRuleLabels={imageOptimize:'一键优化',imageDirected:'带要求的优化'};
 
 function Button({icon:Icon,children,primary=false,danger=false,className='',...props}){return <button className={`button ${primary?'primary':''} ${danger?'danger':''} ${className}`} {...props}>{Icon&&<Icon size={18}/>} {children}</button>}
@@ -134,6 +143,10 @@ export default function App(){
  const [combinationEdit,setCombinationEdit]=useState(null);
  const [returnedEdit,setReturnedEdit]=useState(null);
  const workspaceSaves=useRef(new Map());
+ const videoUpdateDraft=useRef(null),speechUpdateDraft=useRef(null);
+ const [restoredUpdateDraft,setRestoredUpdateDraft]=useState(null);
+ const [initialProjectReady,setInitialProjectReady]=useState(false);
+ const checkedMacStartup=useRef(false);
  const registerFlush=React.useCallback((name,save)=>{
   workspaceSaves.current.set(name,save);
   return ()=>workspaceSaves.current.delete(name);
@@ -144,7 +157,13 @@ export default function App(){
    const rejected=saves.find(result=>result.status==='rejected');
    if(rejected)throw rejected.reason;
   };
-  return ()=>{delete window.flushImageWorkspaceDrafts};
+  window.prepareMacUpdateDrafts=()=>{
+   const drafts={};
+   if(videoUpdateDraft.current)drafts.video=videoUpdateDraft.current;
+   if(speechUpdateDraft.current)drafts.speech=speechUpdateDraft.current;
+   return drafts;
+  };
+  return ()=>{delete window.flushImageWorkspaceDrafts;delete window.prepareMacUpdateDrafts};
  },[]);
  const [speechForMontage,setSpeechForMontage]=useState(null),[settingsSection,setSettingsSection]=useState('connections');
  useEffect(()=>{if(bridge)bridge.call('setUnsaved',Object.keys(drafts).length>0||editorDirty).catch(()=>{})},[drafts,editorDirty]);
@@ -173,7 +192,7 @@ export default function App(){
  const notify=(message,type='success')=>{clearTimeout(toastTimer.current);setToast({message,type});toastTimer.current=setTimeout(()=>setToast(null),6500)};
  const call=async(method,...args)=>{if(!bridge)throw new Error('请在桌面应用中使用此功能');return bridge.call(method,...args)};
  const run=async(fn,success)=>{try{const value=await fn();if(success)notify(success);return value}catch(e){notify(e.message||'操作未完成，请重试','error');return undefined}};
- useEffect(()=>{if(!bridge){setLoaded(true);return}let alive=true;call('getState').then(s=>{if(alive){setState(s);setActiveId(s.rows[0]?.id||'');setLoaded(true)}}).catch(e=>{notify(e.message,'error');setLoaded(true)});const off=bridge.onChange(s=>{if(alive)setState(s)});return()=>{alive=false;off?.()}},[]);
+ useEffect(()=>{if(!bridge){setLoaded(true);return}let alive=true;call('getState').then(s=>{if(alive){setState(s);setActiveId(s.rows[0]?.id||'');setLoaded(true);setInitialProjectReady(true)}}).catch(e=>{notify(e.message,'error');setLoaded(true)});const off=bridge.onChange(s=>{if(alive)setState(s)});return()=>{alive=false;off?.()}},[]);
  useEffect(()=>{if(!state.rows.some(r=>r.id===activeId))setActiveId(state.rows[0]?.id||'')},[state.rows,activeId]);
  const settings=state.settings,active=state.rows.find(r=>r.id===activeId),draft=active?(drafts[activeId]||active):null;
  const dirty=Boolean(active&&drafts[activeId]);
@@ -245,6 +264,13 @@ export default function App(){
  };
  const describe=()=>withSavedRows([activeId],'反推提示词',async()=>{setDescribing(true);try{const text=await call('describe',activeId);setDescribeCandidate({rowId:activeId,text:typeof text==='string'?text:text?.text||''})}finally{setDescribing(false)}});
  const [appInfo,setAppInfo]=useState(null);
+ useEffect(()=>{
+  if(!initialProjectReady||!appInfo?.oneClickUpdate||checkedMacStartup.current)return;
+  checkedMacStartup.current=true;
+  bridge.call('confirmMacUpdateReady').then(drafts=>{
+   if(drafts)setRestoredUpdateDraft(drafts);
+  }).catch(()=>{});
+ },[initialProjectReady,appInfo?.oneClickUpdate]);
  const stats=state.jobs.reduce((totals,job)=>{
   if(job.kind==='image'&&job.status==='queued')totals.waiting++;
   if(job.kind==='image'&&['planning','running','saving'].includes(job.status))totals.busy++;
@@ -293,7 +319,7 @@ export default function App(){
   {!typeNames.includes(draft.name)&&<input aria-label="类型名称" placeholder="填写自定义类型名称" maxLength={60} value={draft.name} onChange={e=>edit({name:e.target.value})}/>}
  </div></div><div className="source-heading"><strong>参考来源</strong><div className="segmented"><button className={draft.sourceMode==='text'?'active':''} onClick={()=>edit({sourceMode:'text'})}>纯文生图</button><button className={draft.sourceMode==='single'?'active':''} onClick={()=>changeReferenceMode('all','single')}><ImageIcon size={17}/>图片</button><button className={draft.sourceMode==='folder'?'active':''} onClick={()=>edit({sourceMode:'folder',referenceMode:'rotate'})}><FolderOpen size={17}/>文件夹</button></div></div>{draft.sourceMode!=='text'&&<><div className={`source-editor source-dropzone ${sourceOver?'source-drop-active':''}`} role="region" aria-label="拖入参考图片" aria-busy={dropping} onDragEnter={e=>{if(Array.from(e.dataTransfer.types).includes('Files')){e.preventDefault();setSourceOver(true)}}} onDragOver={e=>{if(Array.from(e.dataTransfer.types).includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy'}}} onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget))setSourceOver(false)}} onDrop={dropReference}>{draft.sourcePaths[0]?<button className="reference-thumb" aria-label="放大参考图片" onClick={()=>openImages(draft.sourcePaths)}><img src={media(draft.sourcePaths[0])} alt="当前参考图"/>{draft.sourcePaths.length>1&&<span>{draft.sourcePaths.length} 张</span>}</button>:<div className="reference-placeholder"><FileImage size={38}/><span>尚未导入</span></div>}<div className="source-buttons"><Button icon={UploadSimple} onClick={()=>sourceChoose(draft.sourceMode==='folder')}>{draft.sourceMode==='folder'?'选择文件夹':'上传图片'}</Button><Button icon={ArrowsClockwise} onClick={()=>sourceChoose(draft.sourceMode==='folder')}>更换来源</Button><Button icon={Sparkle} disabled={describing||!draft.sourcePaths.length} onClick={describe}>{describing?'正在反推…':'反推提示词'}</Button></div><div className="source-drop-hint"><UploadSimple size={16}/>{dropping?'正在导入参考图片…':'拖入图片或图片文件夹到这里'}<small>只更换参考来源，保存位置、提示词和其他参数保留</small></div></div>{draft.sourcePaths.length>1&&<div className="reference-mode-control"><span>{draft.sourcePaths.length} 张参考图</span><select aria-label="多张参考图使用方式" value={draft.referenceMode==='all'?'all':'rotate'} onChange={e=>changeReferenceMode(e.target.value)}><option value="all">每次全部一起作为参考</option><option value="rotate">每次轮流使用一张</option></select></div>}<Field label={<span>参考提示词 <span className="tiny-badge">手工维护</span></span>}><textarea aria-label="参考提示词" rows={4} placeholder="描述参考图里的主体、构图、背景与风格。" value={draft.referencePrompt} onChange={e=>edit({referencePrompt:e.target.value})}/></Field><p className="field-note"><Info size={16}/>反推结果先预览，不自动覆盖手工内容。</p></>}<div className="request-preset-picker"><Field label="常用要求" hint="从全局设置维护"><select aria-label="用户要求预设" value="" disabled={!requestPresets.length} onChange={e=>{const preset=requestPresets.find(item=>item.id===e.target.value);if(preset)edit({userPrompt:preset.text})}}><option value="">{requestPresets.length?'套用预设，替换本行要求':'暂无预设，可直接填写'}</option>{requestPresets.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></Field></div><Field label={draft.sourceMode==='text'?'生图描述':'用户要求'} hint={draft.sourceMode==='text'?'直接描述想生成的画面':'可直接填写或修改预设内容'}><textarea aria-label={draft.sourceMode==='text'?'生图描述':'用户要求'} rows={3} placeholder={draft.sourceMode==='text'?'例如：一位化妆师在明亮的工作室整理化妆台。':'例如：换成浅色服装，保持页面结构与元素位置。'} value={draft.userPrompt} onChange={e=>edit({userPrompt:e.target.value})}/></Field><PromptRewrite key={draft.id} input={{prompt:draft.userPrompt,name:draft.name,referencePrompt:draft.sourceMode==='text'?'':draft.referencePrompt,templateId:draft.templateId,templateText:settings.templates.find(item=>item.id===draft.templateId)?.text,referenceCount:draft.sourceMode==='text'?0:draft.sourcePaths.length,ratio:draft.ratio}} call={call} run={run} onApply={userPrompt=>edit({userPrompt})} disabled={saving}/>
  <div className="config-grid"><Field label="生成数量"><input aria-label="生成数量" type="number" min="1" max="100" value={draft.count} onChange={e=>edit({count:e.target.value})}/></Field><Field label="图片比例"><select aria-label="图片比例" value={draft.ratio} onChange={e=>edit({ratio:e.target.value})}>{ratioOptions.map(([v,l])=><option key={v} value={v}>{v==='source'&&draft.sourceMode==='text'?'模型默认比例':l}</option>)}</select></Field><Field label="分辨率"><select aria-label="图片分辨率" value={draft.resolution} onChange={e=>edit({resolution:e.target.value})}>{['1K','2K','4K'].map(v=><option key={v}>{v}</option>)}</select></Field><Field label="项目规范"><select aria-label="项目规范模板" value={draft.templateId} onChange={e=>edit({templateId:e.target.value})}><option value="">不使用模板</option>{settings.templates.map(t=><option value={t.id} key={t.id}>{t.name}</option>)}</select></Field></div><ImageRowOutput {...{draft,edit,run,call,Field}}/><Button className="save-row" icon={FloppyDisk} disabled={saving||!dirty} onClick={()=>run(async()=>{setSaving(true);try{await saveRow()}finally{setSaving(false)}},'当前行已保存')}>{saving?'正在保存…':'保存本行'}</Button></>:<Empty title="选择一个类型" description="新增或点击左侧任务，编辑当前行配置。"/>}</aside>}</div>}
- <div className="route-pane" hidden={route!=='video'}><VideoPage {...shared} active={route==='video'}/></div><div className="route-pane" hidden={route!=='speech'}><SpeechWorkspace {...shared} onOpenSettings={()=>{setSettingsSection({tab:'speech',visit:uid()});changeRoute('settings')}} onUseForMontage={job=>{setSpeechForMontage({id:job.id,masterAudioPath:job.localPath,masterText:job.snapshot?.config?.text||job.prompt||'',masterCues:job.result?.segments||job.segments||[],name:job.snapshot?.config?.name||'配音混剪'});changeRoute('montage');notify('配音已带入混剪，请添加画面素材并预览方案')}}/></div><div className="route-pane" hidden={route!=='montage'}><MontageWorkspace {...shared} speechInput={speechForMontage} renderGallery={jobs=><JobGallery {...shared} type="montage" title="混剪成片 · 导出记录" jobs={jobs}/>}/></div><div className="route-pane" hidden={route!=='library'}><LibraryPage {...shared}/></div><div className="route-pane" hidden={route!=='settings'}><SettingsPage {...shared} initialSection={settingsSection}/></div>
+ <div className="route-pane" hidden={route!=='video'}><VideoPage {...shared} active={route==='video'} updateDraftRef={videoUpdateDraft} restoredDraft={restoredUpdateDraft?.video}/></div><div className="route-pane" hidden={route!=='speech'}><SpeechWorkspace {...shared} updateDraftRef={speechUpdateDraft} restoredDraft={restoredUpdateDraft?.speech} onOpenSettings={()=>{setSettingsSection({tab:'speech',visit:uid()});changeRoute('settings')}} onUseForMontage={job=>{setSpeechForMontage({id:job.id,masterAudioPath:job.localPath,masterText:job.snapshot?.config?.text||job.prompt||'',masterCues:job.result?.segments||job.segments||[],name:job.snapshot?.config?.name||'配音混剪'});changeRoute('montage');notify('配音已带入混剪，请添加画面素材并预览方案')}}/></div><div className="route-pane" hidden={route!=='montage'}><MontageWorkspace {...shared} speechInput={speechForMontage} renderGallery={jobs=><JobGallery {...shared} type="montage" title="混剪成片 · 导出记录" jobs={jobs}/>}/></div><div className="route-pane" hidden={route!=='library'}><LibraryPage {...shared}/></div><div className="route-pane" hidden={route!=='settings'}><SettingsPage {...shared} initialSection={settingsSection}/></div>
  </main><footer className="app-footer"><div className="output-location" title={settings.outputDir}><FolderOpen size={23}/><strong>输出根目录：</strong><span>{settings.outputDir||'尚未设置'}</span><Button icon={FolderOpen} disabled={!settings.outputDir} onClick={()=>run(()=>bridge.openOutput())}>打开目录</Button><Button onClick={()=>run(async()=>{const path=await chooseFolder();if(path)await call('updateSettings',{outputDir:path})})}>更改</Button><ImageCategoryDirectories rows={state.rows} {...{settings,call,chooseFolder,Button}}/></div><div className="footer-item"><span>自动导出</span><button className={`switch ${settings.autoExport?'on':''}`} role="switch" aria-label="自动导出" aria-checked={settings.autoExport} onClick={()=>updateSettings({autoExport:!settings.autoExport})}/></div><div className="footer-item"><Stack size={20}/><span>生图并发</span><select aria-label="生图并发" value={settings.concurrency} onChange={e=>updateSettings({concurrency:+e.target.value})}>{Array.from({length:100},(_,i)=><option value={i+1} key={i}>{i+1}</option>)}</select></div><button type="button" className="footer-item queue-indicator" onClick={()=>changeRoute('image-tasks')} title="打开生图任务中心"><Spinner size={20} className={stats.busy?'spinning':''}/><span>生图执行 <b>{stats.busy}</b> · 排队 <b>{stats.waiting}</b></span></button><Button icon={settings.paused?Play:Pause} onClick={()=>run(()=>call('setPaused',!settings.paused),settings.paused?'队列已继续':'队列已暂停，正在执行的任务会安全完成')}>{settings.paused?'继续':'暂停'}</Button>{route==='images'&&<button className="next-step" onClick={()=>changeRoute('template')}>进入模板调试 <ArrowRight size={20}/></button>}{route==='video'&&<button className="next-step" onClick={()=>changeRoute('montage')}>进入混剪成片 <ArrowRight size={20}/></button>}</footer>
  {toast&&<div className={`toast ${toast.type}`} role="status">{toast.type==='error'?<WarningCircle size={22}/>:<CheckCircle size={22}/>}<span>{toast.message}</span><button aria-label="关闭通知" onClick={()=>setToast(null)}><X size={18}/></button></div>}{viewer&&route!=='images'&&<ImageViewer key={viewer.items[viewer.index]?.path} {...viewer} onClose={()=>setViewer(null)}/>}{videoPreview&&<Modal title={videoPreview.name||'视频预览'} wide onClose={()=>setVideoPreview(null)}><video className="video-preview" controls autoPlay src={media(videoPreview.path)}/><div className="modal-actions"><Button icon={FolderOpen} onClick={()=>run(()=>bridge.reveal(videoPreview.path))}>打开文件位置</Button></div></Modal>}
  {editor&&<TimelineEditor key={editor.id} record={editor} call={call} choose={choose} media={media} run={run} setDirty={setEditorDirty} onClose={()=>{setEditor(null);setEditorDirty(false)}}/>}
@@ -428,8 +454,13 @@ function ImagePromptSettings({rules,call,run}){
 }
 
 function VideoPage(props){
- const {state,call,run,choose,openImages,setVideoPreview,active}=props;
- const [config,setConfig]=useState({mode:'text',prompt:'',referencePaths:[],duration:5,ratio:'9:16',resolution:'768P',count:1,model:''});
+ const {state,call,run,choose,openImages,setVideoPreview,active,updateDraftRef,restoredDraft}=props;
+ const [config,setConfig]=useState(defaultVideoForm);
+ React.useLayoutEffect(()=>{
+  const form=videoFormForUpdate(config);
+  updateDraftRef.current=Object.keys(form).some(key=>key==='referencePaths'?form[key].length:form[key]!==defaultVideoForm[key])?form:null;
+ },[config,updateDraftRef]);
+ useEffect(()=>{if(restoredDraft)setConfig(videoFormForUpdate(restoredDraft))},[restoredDraft]);
  const [submitting,setSubmitting]=useState(false),[dashboard,setDashboard]=useState(null),[loading,setLoading]=useState(false),[referenceWarning,setReferenceWarning]=useState('');
  const provider=state.settings.providers.find(p=>p.id===state.settings.bindings.video);
  const oai=!provider||provider.protocol==='oairegbox-video';

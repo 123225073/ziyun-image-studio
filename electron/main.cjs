@@ -2,6 +2,7 @@ const {app,BrowserWindow,ipcMain,dialog,shell,safeStorage,protocol,net}=require(
 const fs=require('node:fs');const fsp=require('node:fs/promises');const path=require('node:path');const {pathToFileURL}=require('node:url');const {Readable}=require('node:stream');const {randomUUID}=require('node:crypto');
 protocol.registerSchemesAsPrivileged([{scheme:'studio-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 let win,service,pickers,vault,quitting=false,unsaved=false;
+let macUpdater, pendingStudioCalls=0;
 const root=path.resolve(__dirname,'..');
 app.setName('子云影像工坊');
 if(process.env.ZIYUN_DATA_DIR)app.setPath('userData',path.resolve(process.env.ZIYUN_DATA_DIR));
@@ -111,6 +112,34 @@ async function setup(){
  const {TTS_PROTOCOLS}=await import('../shared/speech.mjs');
  const {normalizeTimeline}=await import('../shared/timeline.mjs');
  const {checkAppRelease,releasePage}=await import('./app-release.mjs');
+ if(process.platform==='darwin'&&app.isPackaged){
+  const {createMacUpdater}=await import('./mac-updater.mjs');
+  macUpdater=createMacUpdater({
+   app,fetchImpl:(url,options)=>net.fetch(url,options),
+   progress:status=>{if(win&&!win.isDestroyed())win.webContents.send('studio:update-progress',status);},
+   assertIdle:()=>{
+    if(closingRequest||quitting)throw new Error('应用正在退出。');
+    if(unsaved)throw new Error('请先保存当前行配置或时间轴的修改，再更新。');
+    if(pendingStudioCalls||service.active.size||service.pendingCalls.size||service.imageImportTasks.size||
+     service.imageDescribeTasks.size||service.speechTasks.size||service.reviewTasks.size||service.preparingDraft||
+     service.coverLayoutTask||service.state.jobs.some(job=>['queued','planning','running','saving'].includes(job.status)))
+     throw new Error('当前还有任务或操作正在处理，请在完成后再更新。');
+   },
+   flushDrafts:async version=>{
+    try{
+     await win.webContents.executeJavaScript('window.flushImageWorkspaceDrafts()');
+     const drafts=await win.webContents.executeJavaScript('window.prepareMacUpdateDrafts('+JSON.stringify(version)+')');
+     if(drafts?.video?.referencePaths?.length){
+      const allowed=await allowedPaths();
+      if(!drafts.video.referencePaths.every(file=>typeof file==='string'&&allowed.has(mediaPathKey(file))))throw new Error('视频参考素材未登记。');
+     }
+     return drafts;
+    }
+    catch{throw new Error('草稿尚未保存，请返回工作区保存后再更新。');}
+   },
+   shutdown:async()=>{await service.close();quitting=true;app.quit();},
+  });
+ }
  const {OAIREGBOX_BASE,OAIREGBOX_CONSOLE,oairegboxBase}=await import('../shared/oairegbox.mjs');
  const ffmpegPath=await resolveFfmpeg(app.isPackaged?process.resourcesPath:root,dataDir);
  const providerRunner=async(op,payload,context)=>{
@@ -146,7 +175,25 @@ async function setup(){
   const input=process.env.ZIYUN_CONFIG_PIPE?require('node:net').createConnection(process.env.ZIYUN_CONFIG_PIPE):process.stdin;if(input!==process.stdin)input.setTimeout(15000,()=>input.destroy(new Error('本机配置通道超时。')));let text='';for await(const chunk of input){text+=chunk.toString();if(Buffer.byteLength(text)>131072){input.destroy();throw new Error('配置输入过大。');}}const config=JSON.parse(text);if(!Array.isArray(config.providers)||config.providers.length>8)throw new Error('配置格式错误。');for(const p of config.providers)await saveProvider(p);await service.updateSettings({bindings:config.bindings||{}});await service.close();process.stdout.write('CPA_CONFIGURED\n');app.exit(0);return;
  }
  const methods=new Set(['getState','reorderRows','saveRowCode','saveMontageSetup','createMontageDraft','reviewMontageCombinations','suggestMontageCombination','acceptMontageSuggestion','resolveMontageBindings','updateSettings','saveRow','deleteRow','deleteRows','importFiles','scanFolder','enqueueImages','enqueueVideo','enqueueMontage','enqueueSpeech','planMontage','editMontageShot','retryJobs','selectJobs','setPaused','exportJobs','saveFormula','describe','rewritePrompt','deleteFailedImages','archiveImages','saveTimeline','openTimeline','enqueueTimeline']);
- ipcMain.handle('studio:call',async(event,method,...args)=>{try{checkSender(event);if(method==='appInfo')return {ok:true,value:{version:appVersion,platform:process.platform,arch:process.arch}};
+ ipcMain.handle('studio:call',async(event,method,...args)=>{let counted=false;try{checkSender(event);
+   if(method==='appInfo')return {ok:true,value:{version:appVersion,platform:process.platform,arch:process.arch,oneClickUpdate:Boolean(macUpdater)}};
+   if(method==='confirmMacUpdateReady'){
+    if(macUpdater){
+     const {confirmMacInstall}=await import('./mac-install.mjs');
+     const drafts=await confirmMacInstall();
+     for(const file of drafts?.video?.referencePaths||[])selectedPaths.add(file);
+     return {ok:true,value:drafts};
+    }
+    return {ok:true};
+   }
+   if(method==='installMacUpdate'){
+    if(!macUpdater)throw new Error('一键更新需要已安装的 Mac 版。');
+    if(closingRequest||quitting)throw new Error('应用正在退出。');
+    return {ok:true,value:await macUpdater.start()};
+   }
+   if(method==='cancelMacUpdate'){macUpdater?.cancel();return {ok:true};}
+   if(macUpdater?.finalizing)throw new Error('正在安装更新，请稍候。');
+   if(macUpdater&&method!=='getState'){counted=true;pendingStudioCalls++;}
    if(method==='pasteBatchTemplate'){
     let bytes;
     if(args.length){
@@ -165,7 +212,7 @@ async function setup(){
     return {ok:true,value:saved.original};
    }
    if(method==='checkAppRelease')return {ok:true,value:await checkAppRelease(appVersion,(url,options)=>net.fetch(url,options),globalThis.fetch)};
-   if(method==='openAppReleases'){await shell.openExternal(releasePage);return {ok:true};}
+   if(method==='openAppReleases'){await shell.openExternal(macUpdater?releasePage.replace(/\/latest$/,''):releasePage);return {ok:true};}
    if(method==='saveProvider')return {ok:true,value:await saveProvider(args[0])};if(method==='deleteProvider'){await removeProvider(args[0]);return {ok:true};}if(method==='fetchProviderModels'){
     const draft=args[0] || {};
     const state=await service.getState();
@@ -386,7 +433,7 @@ async function setup(){
     return {ok:true,value:result};
    }
    if(method==='setUnsaved'){unsaved=Boolean(args[0]);return {ok:true};}if(!methods.has(method))throw new Error('不支持的操作。');if(method==='updateSettings'&&args[0]?.providers)throw new Error('连接请通过专用保存操作维护。');const value=await service[method](...args);if(method==='scanFolder')for(const p of value)selectedPaths.add(p);return {ok:true,value};
-  }catch(e){return {ok:false,error:typeof e.message==='string'?e.message:'操作失败。',...(typeof e.code==='string'&&e.code.startsWith('CREDENTIAL_STORAGE_')?{code:e.code,retryable:true}:{})};}});
+  }catch(e){return {ok:false,error:typeof e.message==='string'?e.message:'操作失败。',...(typeof e.code==='string'&&e.code.startsWith('CREDENTIAL_STORAGE_')?{code:e.code,retryable:true}:{})};}finally{if(counted)pendingStudioCalls--;}});
  const isDirectory=async dir=>path.isAbsolute(dir||'')&&(await fsp.stat(dir).catch(()=>null))?.isDirectory();
  async function imageDefaultPath(){
   const {settings,rows}=await service.getState();
@@ -445,9 +492,9 @@ async function setup(){
 }
 let closingRequest=false;
 async function quitSafely(){
- if(quitting||closingRequest)return;
+ if(quitting||closingRequest||macUpdater?.finalizing)return;
  closingRequest=true;
- try{await finishClose()}finally{closingRequest=false}
+ try{await macUpdater?.cancelAndWait();await finishClose()}finally{closingRequest=false}
 }
 async function finishClose(){
  if(win&&!win.isDestroyed()&&!win.webContents.isDestroyed()&&!win.webContents.isCrashed()){

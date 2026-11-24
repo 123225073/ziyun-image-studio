@@ -15,7 +15,7 @@ const elapsed = (job, clock) => {
   return `${job.status === 'queued' ? '等待' : activeStatuses.includes(job.status) ? '已用' : '用时'} ${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 };
 
-export default function SpeechWorkspace({ state, call, run, notify, onUseForMontage, onOpenSettings }) {
+export default function SpeechWorkspace({ state, call, run, notify, onUseForMontage, onOpenSettings, updateDraftRef, restoredDraft }) {
   const { settings } = state;
   const presets = settings.speechPresets || [];
   const providers = settings.providers.filter(provider => TTS_PROTOCOLS.includes(provider.protocol));
@@ -23,6 +23,13 @@ export default function SpeechWorkspace({ state, call, run, notify, onUseForMont
   const defaultProvider = providers.find(provider => provider.id === (defaultPreset?.providerId || settings.bindings.tts)) || providers[0];
   const [text, setText] = useState('');
   const [name, setName] = useState('我的配音');
+  React.useLayoutEffect(() => {
+    updateDraftRef.current = text || name !== '我的配音' ? { text, name } : null;
+  }, [text, name, updateDraftRef]);
+  useEffect(() => {
+    if (typeof restoredDraft?.text === 'string') setText(restoredDraft.text);
+    if (typeof restoredDraft?.name === 'string') setName(restoredDraft.name);
+  }, [restoredDraft]);
   const [presetId, setPresetId] = useState(defaultPreset?.id || '');
   const [providerId, setProviderId] = useState(defaultProvider?.id || '');
   const [options, setOptions] = useState(() => ({ ...speechDefaults(defaultProvider), ...defaultPreset }));
